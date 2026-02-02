@@ -1,0 +1,37 @@
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: #f1f3f5;
+}
+.container {
+  max-width: 1200px;
+  margin: 10px auto;
+  padding: 20px;
+  background: white;
+  border-radius: 10px;
+}
+input, select {
+  margin: 4px 0;
+  padding: 6px;
+  width: 100%;
+}
+button {
+  padding: 8px 12px;
+  background-color: #0b5ed7;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+ul {
+  list-style-type: none;
+  padding: 0;
+}
+li {
+  margin: 8px 0;
+  background: #e7f1ff;
+  padding: 10px;
+  border-radius: 5px;
+  display: flex;
+  justify-content: space-between;
+}
