@@ -56,7 +56,7 @@ const Dashboard = () => {
 
     const handleApprove = async (id) => {
         try {
-            await axios.put(`http://localhost:5000/api/expenses/approve/${id}`, { status: 'Approved' }, { headers: { 'x-auth-token': token } });
+            await axios.put(`${API.EXPENSES}/approve/${id}`, { status: 'Approved' }, { headers: { 'x-auth-token': token } });
             fetchExpenses();
         } catch (err) {
             alert(err.response?.data?.msg || 'Failed to approve');
