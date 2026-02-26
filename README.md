@@ -54,29 +54,70 @@ npm install
 
 ## Running the Application
 
-1. Start the MongoDB service:
-   - On Windows: MongoDB should run as a service automatically after installation
-   - On Linux/Mac: `sudo service mongod start`
-   -Make sure to cloud MongoDB Like Atlas
+### 1. Start MongoDB
 
-2. Start the server:
+1. Make sure MongoDB is running (local service or Atlas cluster):
+   - On Windows: MongoDB usually runs as a service after installation
+   - On Linux/Mac: `sudo service mongod start`
+   - Or use a cloud MongoDB instance like Atlas and point `MONGO_URI` to it
+
+### 2. Start the Backend API (server)
+
 ```bash
 cd server
-node server.js
+npm install          # first time only
+npm run dev          # development with nodemon
+# or: npm start      # plain node server.js
 ```
 
-3. Start the client:
+The backend will be available at:
+
+- `http://localhost:5000`
+- Health check: `http://localhost:5000/api/health`
+
+### 3. Start the Web Client (client)
+
 ```bash
 cd client
-npm start
+npm install              # first time only
+npm run start:legacy     # recommended on Windows
+# or: npm start          # if this works without OpenSSL errors
 ```
 
-4. Access the application:
-   - Frontend: http://localhost:3000
-   - Backend API: http://localhost:5000
+The React app will open at:
 
-5.Docker Build
--   docker-compose up --build
+- `http://localhost:3000`
+
+The client is already configured to proxy API requests to `http://localhost:5000`.
+
+### 4. Run the Mobile App (CorpSpendMobile)
+
+1. Update the API base URL in `CorpSpendMobile/screens/LoginScreen.js` and `CorpSpendMobile/screens/AddExpenseScreen.js`:
+   - Replace `192.168.1.XXX` with **your computer's local Wi‑Fi IP** (reachable from your phone), e.g.
+     - `http://192.168.1.20:5000/api`
+   - Make sure your phone and computer are on the **same Wi‑Fi network**.
+
+2. Install and run the Expo app:
+
+```bash
+cd CorpSpendMobile
+npm install        # first time only
+npm run start      # or: npx expo start
+```
+
+3. Open the app:
+   - Use the **Expo Go** app on your phone (scan the QR code), or
+   - Use an Android emulator / iOS simulator.
+
+After logging in on mobile, expenses will be sent to the same backend (`/api/expenses`) using the JWT token saved in `AsyncStorage`.
+
+### 5. Docker (optional)
+
+To build and run using Docker Compose:
+
+```bash
+docker-compose up --build
+```
 
 ## Project Structure
 
