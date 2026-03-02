@@ -2,6 +2,13 @@ const Expense = require('../models/Expense');
 const User = require('../models/User');
 const { sendNotification } = require('../utils/emailService');
 
+// Helper to get manager email for notifications
+const getManagerEmail = async () => {
+    // Finds the first user with manager role; defaults to admin if none found
+    const manager = await User.findOne({ role: 'manager' });
+    return manager ? manager.email : 'admin@nikamaqua.com'; 
+};
+
 const getExpensesForUser = async (req) => {
     if (req.user.role === 'manager' || req.user.role === 'admin') {
         return Expense.find().populate('requestedBy', 'username email department');
@@ -11,48 +18,160 @@ const getExpensesForUser = async (req) => {
 
 exports.getExpenses = async (req, res) => {
     try {
-        if (req.user.role === 'manager' || req.user.role === 'admin') {
-            const expenses = await Expense.find().populate('requestedBy', 'username department');
-            return res.json(expenses);
-        }
-        const expenses = await Expense.find({ requestedBy: req.user.id });
+        const expenses = await getExpensesForUser(req);
+
+        // Lightweight AI duplicate highlighting at read-time so older data also shows flags
+        const duplicateMap = new Map();
+
+        expenses.forEach((exp) => {
+            const userId = exp.requestedBy?._id?.toString() || exp.requestedBy?.toString() || 'unknown';
+            const key = [
+                userId,
+                exp.amount,
+                (exp.category || '').toLowerCase(),
+                (exp.title || '').trim().toLowerCase()
+            ].join('|');
+
+            if (!duplicateMap.has(key)) {
+                duplicateMap.set(key, []);
+            }
+            duplicateMap.get(key).push(exp);
+        });
+
+        duplicateMap.forEach((group) => {
+            if (group.length > 1) {
+                group.forEach((exp) => {
+                    exp.isFlagged = true;
+                    const reason = 'Potential Duplicate: Similar request found for same user, title, category, and amount.';
+                    exp.flagReason = exp.flagReason
+                        ? `${exp.flagReason} | ${reason}`
+                        : reason;
+                });
+            }
+        });
+
         res.json(expenses);
     } catch (err) {
+        console.error("Fetch Error:", err.message);
         res.status(500).json({ msg: 'Server Error' });
     }
 };
 
 exports.createExpense = async (req, res) => {
     try {
-        const { title, amount, category, date } = req.body;
-        const newExpense = new Expense({
-            title, amount, category, date,
-            requestedBy: req.user.id
+        const { title, originalAmount, amount, currency, category, date } = req.body;
+        const userId = req.user.id;
+        
+        const inputAmount = originalAmount || amount;
+        let finalAmountInINR = inputAmount;
+        let finalCurrency = currency || 'INR';
+
+        // A. Currency Conversion Logic
+        if (finalCurrency !== 'INR') {
+            try {
+                const response = await fetch('https://api.exchangerate-api.com/v4/latest/INR');
+                const data = await response.json();
+                const rate = data.rates[finalCurrency];
+                if (rate) finalAmountInINR = inputAmount / rate;
+            } catch (apiError) {
+                console.error("Exchange API failed:", apiError);
+                return res.status(503).json({ msg: "Currency conversion service unavailable." });
+            }
+        }
+
+        const roundedAmount = Math.round(finalAmountInINR);
+        let isFlagged = false;
+        let flagReasons = [];
+
+        // B. AI Logic (Duplicate & Anomaly Detection)
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        
+        const possibleDuplicate = await Expense.findOne({
+            requestedBy: userId,
+            amount: roundedAmount,
+            date: { $gte: sevenDaysAgo }
         });
-        const expense = await newExpense.save();
-        
-        // Notify Manager (Hardcoded for demo, normally dynamic)
-        // await sendNotification('manager@company.com', 'New Expense', `User has requested ${amount}`);
-        
-        res.json(expense);
+
+        if (possibleDuplicate) {
+            isFlagged = true;
+            flagReasons.push("Potential Duplicate: Same amount submitted recently.");
+        }
+
+        const pastExpenses = await Expense.find({ requestedBy: userId, category, status: 'Approved' });
+        if (pastExpenses.length >= 3) {
+            const averageSpend = pastExpenses.reduce((sum, exp) => sum + exp.amount, 0) / pastExpenses.length;
+            if (roundedAmount > averageSpend * 2.5) {
+                isFlagged = true;
+                flagReasons.push(`Spending Anomaly: Higher than average (₹${Math.round(averageSpend)})`);
+            }
+        }
+
+        const newExpense = new Expense({
+            title,
+            originalAmount: inputAmount,
+            currency: finalCurrency,
+            amount: roundedAmount,
+            category,
+            date,
+            requestedBy: userId,
+            isFlagged,
+            flagReason: flagReasons.join(" | ")
+        });
+
+        const savedExpense = await newExpense.save();
+
+        // D. Notify Manager via Email
+        const managerEmail = await getManagerEmail();
+        const managerHtml = `
+            <h3>New Expense Request: ${title}</h3>
+            <p><strong>Employee:</strong> ${req.user.username || req.user.email}</p>
+            <p><strong>Amount:</strong> ${inputAmount} ${finalCurrency} (Converted: ₹${roundedAmount})</p>
+            <p><strong>Status:</strong> ${isFlagged ? '⚠️ Flagged by AI' : '✅ Verified'}</p>
+            <p>Please log in to Approve/Reject.</p>
+        `;
+        await sendNotification(managerEmail, `Action Required: New Expense from ${req.user.username}`, managerHtml);
+
+        res.json(savedExpense);
+
     } catch (err) {
+        console.error("Create Expense Error:", err.message);
         res.status(500).json({ msg: 'Server Error' });
     }
 };
 
 exports.updateStatus = async (req, res) => {
     try {
-        const { status, rejectionReason } = req.body;
-        let expense = await Expense.findById(req.params.id);
+        // We use 'reason' here because that's what we defined in the Mobile Alert.prompt
+        const { status, reason } = req.body; 
+        
+        let expense = await Expense.findById(req.params.id).populate('requestedBy', 'email username');
         if (!expense) return res.status(404).json({ msg: 'Expense not found' });
 
         expense.status = status;
         expense.actionTakenBy = req.user.id;
-        if (status === 'Rejected') expense.rejectionReason = rejectionReason;
+        
+        // Ensure we save the reason to the database
+        if (status === 'Rejected') {
+            expense.rejectionReason = reason; // Make sure your Model uses 'rejectionReason'
+        }
 
         await expense.save();
+
+        // Use the 'reason' variable directly in the email HTML
+        const employeeHtml = `
+            <div style="font-family: sans-serif; padding: 20px; border: 1px solid #eee;">
+                <h2 style="color: #ef4444;">Expense Update: ${status}</h2>
+                <p>Your request for "<strong>${expense.title}</strong>" has been rejected.</p>
+                <p style="color: red;"><strong>Reason:</strong> ${reason || 'No reason provided'}</p> 
+                <p>Thank you for using CorpSpend.</p>
+            </div>
+        `;
+
+        await sendNotification(expense.requestedBy.email, `Expense Update: ${status}`, employeeHtml);
         res.json(expense);
     } catch (err) {
+        console.error("Update Status Error:", err.message);
         res.status(500).json({ msg: 'Server Error' });
     }
 };
@@ -60,105 +179,61 @@ exports.updateStatus = async (req, res) => {
 exports.sendExpenseReport = async (req, res) => {
     try {
         const { email } = req.body;
-        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-            return res.status(400).json({ msg: 'Valid email address is required' });
-        }
+        if (!email) return res.status(400).json({ msg: 'Valid email is required' });
+
         const expenses = await getExpensesForUser(req);
-        const isManagerOrAdmin = req.user.role === 'manager' || req.user.role === 'admin';
         const total = expenses.reduce((acc, e) => acc + Number(e.amount || 0), 0);
-        const date = new Date().toLocaleDateString('en-IN', { dateStyle: 'long' });
+        const dateStr = new Date().toLocaleDateString('en-IN', { dateStyle: 'long' });
 
-        const rows = expenses.map(e => {
-            const requestedBy = e.requestedBy ? (e.requestedBy.username || e.requestedBy.email || '—') : '—';
-            const dept = e.requestedBy?.department ? ` (${e.requestedBy.department})` : '';
-            return `
-        <tr>
-            <td style="padding:8px 12px;border:1px solid #e2e8f0">${escapeHtml(e.title || '—')}</td>
-            <td style="padding:8px 12px;border:1px solid #e2e8f0">${escapeHtml(e.category || '—')}</td>
-            <td style="padding:8px 12px;border:1px solid #e2e8f0">₹${Number(e.amount || 0).toLocaleString()}</td>
-            <td style="padding:8px 12px;border:1px solid #e2e8f0">${escapeHtml(e.status || '—')}</td>
-            ${isManagerOrAdmin ? `<td style="padding:8px 12px;border:1px solid #e2e8f0">${escapeHtml(requestedBy + dept)}</td>` : ''}
-            <td style="padding:8px 12px;border:1px solid #e2e8f0">${e.date ? new Date(e.date).toLocaleDateString() : '—'}</td>
-        </tr>`;
-        }).join('');
+        let rows = '';
+        expenses.forEach(e => {
+            rows += `
+                <tr>
+                    <td style="padding:8px;border:1px solid #ddd">${escapeHtml(e.title)}</td>
+                    <td style="padding:8px;border:1px solid #ddd">₹${Number(e.amount).toLocaleString()}</td>
+                    <td style="padding:8px;border:1px solid #ddd">${e.status}</td>
+                    <td style="padding:8px;border:1px solid #ddd">${new Date(e.date).toLocaleDateString()}</td>
+                </tr>`;
+        });
 
-        const html = `
-<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;color:#334155;line-height:1.5;max-width:720px;margin:0 auto;padding:24px}</style></head>
-<body>
-    <h1 style="color:#1e293b;margin-bottom:4px">CorpSpend Expense Report</h1>
-    <p style="color:#64748b;margin-bottom:24px">Generated on ${date}</p>
-    <p style="margin-bottom:16px"><strong>Total amount:</strong> ₹${total.toLocaleString()}</p>
-    <p style="margin-bottom:16px"><strong>Total entries:</strong> ${expenses.length}</p>
-    <table style="width:100%;border-collapse:collapse;margin-top:16px">
-        <thead>
-            <tr style="background:#f1f5f9">
-                <th style="padding:8px 12px;border:1px solid #e2e8f0;text-align:left">Description</th>
-                <th style="padding:8px 12px;border:1px solid #e2e8f0;text-align:left">Category</th>
-                <th style="padding:8px 12px;border:1px solid #e2e8f0;text-align:left">Amount</th>
-                <th style="padding:8px 12px;border:1px solid #e2e8f0;text-align:left">Status</th>
-                ${isManagerOrAdmin ? '<th style="padding:8px 12px;border:1px solid #e2e8f0;text-align:left">Requested by</th>' : ''}
-                <th style="padding:8px 12px;border:1px solid #e2e8f0;text-align:left">Date</th>
-            </tr>
-        </thead>
-        <tbody>${rows}
-        </tbody>
-    </table>
-    <p style="margin-top:24px;color:#64748b;font-size:14px">This is an automated report from CorpSpend.</p>
-</body>
-</html>`;
+        const reportHtml = `
+            <h1>CorpSpend Report - ${dateStr}</h1>
+            <p><strong>Total Reimbursement:</strong> ₹${total.toLocaleString()}</p>
+            <table style="width:100%; border-collapse: collapse;">
+                <thead><tr style="background:#f1f5f9"><th>Title</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
 
-        const result = await sendNotification(email, `CorpSpend Expense Report – ${date}`, html);
-        if (result.previewUrl) {
-            // Test mode - return preview link
-            res.json({ 
-                msg: 'Demo mode: Email generated successfully!', 
-                previewUrl: result.previewUrl,
-                note: 'Click the link below to view the email (Ethereal test service)'
-            });
-        } else {
-            res.json({ msg: 'Report sent to ' + email });
-        }
+        const result = await sendNotification(email, `Your Expense Report - ${dateStr}`, reportHtml);
+        res.json({ msg: 'Report sent!', previewUrl: result?.previewUrl });
     } catch (err) {
-        console.error('Send report error:', err.message);
-        res.status(500).json({ msg: err.message || 'Failed to send email. Check server email configuration.' });
+        res.status(500).json({ msg: 'Failed to send report' });
     }
 };
-
-function escapeHtml(str) {
-    if (str == null) return '—';
-    return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-}
 
 exports.exportExpensesCsv = async (req, res) => {
     try {
         const expenses = await getExpensesForUser(req);
-        const isManagerOrAdmin = req.user.role === 'manager' || req.user.role === 'admin';
-        const headers = ['Description', 'Category', 'Amount (₹)', 'Status', ...(isManagerOrAdmin ? ['Requested by', 'Department'] : []), 'Date'];
-        const escapeCsv = (v) => {
-            const s = v == null ? '' : String(v);
-            return s.includes(',') || s.includes('"') || s.includes('\n') ? '"' + s.replace(/"/g, '""') + '"' : s;
-        };
-        const rows = expenses.map(e => {
-            const base = [e.title || '', e.category || '', e.amount ?? '', e.status || ''];
-            if (isManagerOrAdmin) {
-                base.push(e.requestedBy?.username || '', e.requestedBy?.department || '');
-            }
-            base.push(e.date ? new Date(e.date).toLocaleDateString() : '');
-            return base.map(escapeCsv).join(',');
-        });
+        const headers = ['Description', 'Category', 'Amount (INR)', 'Status', 'Date'];
+        
+        const rows = expenses.map(e => [
+            escapeCsv(e.title),
+            escapeCsv(e.category),
+            e.amount,
+            e.status,
+            new Date(e.date).toLocaleDateString()
+        ].join(','));
+
         const csv = '\uFEFF' + [headers.join(','), ...rows].join('\r\n');
-        const filename = `expense-report-${new Date().toISOString().slice(0, 10)}.csv`;
-        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', 'attachment; filename=expenses.csv');
         res.send(csv);
     } catch (err) {
-        console.error('Export CSV error:', err.message);
-        res.status(500).json({ msg: 'Failed to export' });
+        res.status(500).json({ msg: 'CSV Export failed' });
     }
 };
+
+// Utility Helpers
+function escapeHtml(str) { return String(str).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+function escapeCsv(v) { let s = v == null ? '' : String(v); return s.includes(',') || s.includes('"') ? '"' + s.replace(/"/g, '""') + '"' : s; }
