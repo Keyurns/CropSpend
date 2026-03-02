@@ -30,21 +30,12 @@ const getTransporter = async () => {
         });
         return { transporter, isTest: false };
     } else {
-        // Use Ethereal test account (no setup needed, works instantly)
-        if (!testAccountPromise) {
-            testAccountPromise = nodemailer.createTestAccount();
-        }
-        const testAccount = await testAccountPromise;
+        // Development mode: avoid external SMTP to prevent SSL/TLS issues
+        // Use Nodemailer's jsonTransport so emails are generated instantly in-memory.
         transporter = nodemailer.createTransport({
-            host: 'smtp.ethereal.email',
-            port: 587,
-            secure: false,
-            auth: {
-                user: testAccount.user,
-                pass: testAccount.pass
-            }
+            jsonTransport: true
         });
-        console.log('Using Ethereal test email account:', testAccount.user);
+        console.log('Email dev mode: using jsonTransport (no real SMTP connection).');
         return { transporter, isTest: true };
     }
 };
@@ -61,9 +52,10 @@ const sendNotification = async (to, subject, htmlContent) => {
 
     if (isTest) {
         // Return preview URL for Ethereal
-        const previewUrl = nodemailer.getTestMessageUrl(info);
-        console.log('Email preview URL:', previewUrl);
-        return { success: true, previewUrl };
+        // With jsonTransport there is no real preview URL, but we return the
+        // generated message object so the API can still respond successfully.
+        console.log('Email dev mode payload:', info.message);
+        return { success: true, previewUrl: null };
     }
     
     return { success: true };
