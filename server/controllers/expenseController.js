@@ -121,19 +121,25 @@ exports.createExpense = async (req, res) => {
 
         const savedExpense = await newExpense.save();
 
-        // D. Notify Manager via Email
+        // D. Manager Notification
         const managerEmail = await getManagerEmail();
+        
+        // Fetch the actual user from the database to get their name/email
+        const requestingUser = await User.findById(req.user.id);
+        const employeeName = requestingUser ? (requestingUser.username || requestingUser.email) : 'Employee';
+
         const managerHtml = `
-            <h3>New Expense Request: ${title}</h3>
-            <p><strong>Employee:</strong> ${req.user.username || req.user.email}</p>
-            <p><strong>Amount:</strong> ${inputAmount} ${finalCurrency} (Converted: ₹${roundedAmount})</p>
-            <p><strong>Status:</strong> ${isFlagged ? '⚠️ Flagged by AI' : '✅ Verified'}</p>
-            <p>Please log in to Approve/Reject.</p>
+            <div style="font-family: sans-serif; border: 1px solid #e2e8f0; padding: 20px; border-radius: 10px;">
+                <h2 style="color: #4f46e5;">New Expense Request: ${title}</h2>
+                <p><strong>Employee:</strong> ${employeeName}</p>
+                <p><strong>Amount:</strong> ${inputAmount} ${finalCurrency} (Converted: ₹${roundedAmount})</p>
+                <p><strong>Status:</strong> ${isFlagged ? '<span style="color:red;">⚠️ Flagged for Review</span>' : '<span style="color:green;">✅ Verified</span>'}</p>
+                <p>Please log in to the dashboard to approve or reject this request.</p>
+            </div>
         `;
-        await sendNotification(managerEmail, `Action Required: New Expense from ${req.user.username}`, managerHtml);
+        await sendNotification(managerEmail, `Action Required: New Expense - ${title}`, managerHtml);
 
-        res.json(savedExpense);
-
+        res.status(201).json(savedExpense);
     } catch (err) {
         console.error("Create Expense Error:", err.message);
         res.status(500).json({ msg: 'Server Error' });
@@ -142,7 +148,6 @@ exports.createExpense = async (req, res) => {
 
 exports.updateStatus = async (req, res) => {
     try {
-        // We use 'reason' here because that's what we defined in the Mobile Alert.prompt
         const { status, reason } = req.body; 
         
         let expense = await Expense.findById(req.params.id).populate('requestedBy', 'email username');
@@ -151,20 +156,30 @@ exports.updateStatus = async (req, res) => {
         expense.status = status;
         expense.actionTakenBy = req.user.id;
         
-        // Ensure we save the reason to the database
         if (status === 'Rejected') {
-            expense.rejectionReason = reason; // Make sure your Model uses 'rejectionReason'
+            expense.rejectionReason = reason;
         }
 
         await expense.save();
 
-        // Use the 'reason' variable directly in the email HTML
+        // 1. Setup Dynamic UI Variables for the Email
+        const isApproved = status === 'Approved';
+        const statusColor = isApproved ? '#10b981' : '#ef4444'; // Green for approved, Red for rejected
+        const actionText = isApproved ? 'approved' : 'rejected';
+        
+        // 2. Conditionally show the reason ONLY if rejected
+        const reasonHtml = !isApproved 
+            ? `<p style="padding: 10px; background: #fef2f2; border-left: 4px solid #ef4444; color: #b91c1c;"><strong>Reason:</strong> ${reason || 'No specific reason provided'}</p>` 
+            : ''; 
+
+        // 3. Generate dynamic HTML
         const employeeHtml = `
-            <div style="font-family: sans-serif; padding: 20px; border: 1px solid #eee;">
-                <h2 style="color: #ef4444;">Expense Update: ${status}</h2>
-                <p>Your request for "<strong>${expense.title}</strong>" has been rejected.</p>
-                <p style="color: red;"><strong>Reason:</strong> ${reason || 'No reason provided'}</p> 
-                <p>Thank you for using CorpSpend.</p>
+            <div style="font-family: sans-serif; border: 1px solid #e2e8f0; padding: 20px; border-radius: 10px;">
+                <h2 style="color: ${statusColor};">Expense Update: ${status}</h2>
+                <p>Hello ${expense.requestedBy.username || 'there'},</p>
+                <p>Your request for "<strong>${expense.title}</strong>" has been <strong>${actionText}</strong>.</p>
+                ${reasonHtml}
+                <p style="margin-top: 20px; font-size: 14px; color: #64748b;">Thank you for using CorpSpend.</p>
             </div>
         `;
 
