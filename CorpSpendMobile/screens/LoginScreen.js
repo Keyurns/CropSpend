@@ -1,92 +1,232 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, KeyboardAvoidingView, Platform, ActivityIndicator, ScrollView, Modal, FlatList } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 
-const API_URL = 'http://10.92.90.181:5000/api'; 
+const API_URL = 'http://10.58.104.181:5000/api'; // KEEP YOUR LAPTOP IP HERE
 
 export default function LoginScreen({ navigation }) {
-    const [email, setEmail] = useState('');
-    const [password, setPassword] = useState('');
+    const [isLogin, setIsLogin] = useState(true); // Defaulting to Register based on your request
     const [isLoading, setIsLoading] = useState(false);
 
-    const handleLogin = async () => {
-        if (!email || !password) return Alert.alert("Required", "Please fill in all fields.");
+    // Form States
+    const [username, setUsername] = useState('');
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [role, setRole] = useState('Employee');
+    const [department, setDepartment] = useState('General');
+
+    // Dropdown States
+    const [showRolePicker, setShowRolePicker] = useState(false);
+    const [showDeptPicker, setShowDeptPicker] = useState(false);
+
+    const roles = ['Employee', 'Manager'];
+    const departments = ['General', 'Finance', 'Engineering', 'HR', 'Sales'];
+
+    const handleAuth = async () => {
+        if (!email || !password || (!isLogin && !username)) {
+            return Alert.alert("Required", "Please fill in all fields.");
+        }
         
         setIsLoading(true);
         try {
-            const response = await axios.post(`${API_URL}/auth/login`, { 
-                email: email.trim(), 
-                password: password 
-            });
+            const endpoint = isLogin ? '/auth/login' : '/auth/register';
+            const payload = isLogin 
+                ? { email: email.trim(), password } 
+                : { 
+                    username: username.trim(), 
+                    email: email.trim(), 
+                    password, 
+                    role: role.toLowerCase(), 
+                    department 
+                };
+
+            const response = await axios.post(`${API_URL}${endpoint}`, payload);
             
-            // 1. Save the token to the phone's storage
             await AsyncStorage.setItem('userToken', response.data.token);
-            await AsyncStorage.setItem('userRole', response.data.role);
+            await AsyncStorage.setItem('userRole', response.data.role || role.toLowerCase());
+            await AsyncStorage.setItem('userName', response.data.username || username || 'User');
             
-            // 2. Navigate to the Dashboard (AddExpenseScreen)
-            navigation.navigate('Dashboard'); 
+            navigation.replace('Dashboard');
             
         } catch (error) {
-            console.log("LOGIN ERROR:", error.message); // Prints in VS Code terminal
-            Alert.alert("Connection Failed", error.message || "Invalid credentials."); 
+            console.log("AUTH ERROR:", error.message);
+            Alert.alert("Authentication Failed", error.response?.data?.msg || error.message || "Invalid credentials."); 
         } finally {
             setIsLoading(false);
         }
     };
 
+    // Custom Dropdown UI Component
+    const renderDropdown = (label, value, onPress) => (
+        <View style={styles.inputGroup}>
+            <Text style={styles.label}>{label}</Text>
+            <TouchableOpacity style={styles.dropdownInput} onPress={onPress}>
+                <Text style={styles.dropdownText}>{value}</Text>
+                <Ionicons name="chevron-down" size={20} color="#cbd5e1" />
+            </TouchableOpacity>
+        </View>
+    );
+
+    // Modal Picker Component for Dropdowns
+    const renderPickerModal = (visible, setVisible, data, onSelect, title) => (
+        <Modal visible={visible} transparent animationType="fade">
+            <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setVisible(false)}>
+                <View style={styles.modalContent}>
+                    <Text style={styles.modalTitle}>Select {title}</Text>
+                    <FlatList 
+                        data={data}
+                        keyExtractor={(item) => item}
+                        renderItem={({item}) => (
+                            <TouchableOpacity style={styles.modalItem} onPress={() => { onSelect(item); setVisible(false); }}>
+                                <Text style={styles.modalItemText}>{item}</Text>
+                            </TouchableOpacity>
+                        )}
+                    />
+                </View>
+            </TouchableOpacity>
+        </Modal>
+    );
+
     return (
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.container}>
-            <View style={styles.card}>
-                <View style={styles.logoContainer}>
-                    <Ionicons name="wallet" size={48} color="#4f46e5" />
-                    <Text style={styles.headerTitle}>CorpSpend</Text>
-                    <Text style={styles.headerSubtitle}>Enterprise Expense Management</Text>
-                </View>
-                
-                <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Email Address</Text>
-                    <TextInput 
-                        style={styles.input} 
-                        placeholder="employee@company.com" 
-                        placeholderTextColor="#94a3b8"
-                        value={email}
-                        onChangeText={setEmail}
-                        autoCapitalize="none"
-                        keyboardType="email-address"
-                    />
-                </View>
-                
-                <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Password</Text>
-                    <TextInput 
-                        style={styles.input} 
-                        placeholder="••••••••" 
-                        placeholderTextColor="#94a3b8"
-                        value={password}
-                        onChangeText={setPassword}
-                        secureTextEntry
-                    />
-                </View>
-                
-                <TouchableOpacity style={styles.button} onPress={handleLogin} disabled={isLoading}>
-                    <Text style={styles.buttonText}>{isLoading ? "Authenticating..." : "Sign In"}</Text>
-                </TouchableOpacity>
-            </View>
-        </KeyboardAvoidingView>
+        <SafeAreaView style={styles.container}>
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+                <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+                    
+                    <Text style={styles.headerTitle}>
+                        {isLogin ? 'Welcome Back' : 'Create Account'}
+                    </Text>
+
+                    {!isLogin && (
+                        <View style={styles.inputGroup}>
+                            <Text style={styles.label}>Username</Text>
+                            <TextInput 
+                                style={styles.input} 
+                                placeholder="Your name" 
+                                placeholderTextColor="#64748b"
+                                value={username}
+                                onChangeText={setUsername}
+                                autoCapitalize="words"
+                            />
+                        </View>
+                    )}
+
+                    <View style={styles.inputGroup}>
+                        <Text style={styles.label}>Email</Text>
+                        <TextInput 
+                            style={styles.input} 
+                            placeholder="you@company.com" 
+                            placeholderTextColor="#64748b"
+                            value={email}
+                            onChangeText={setEmail}
+                            autoCapitalize="none"
+                            keyboardType="email-address"
+                        />
+                    </View>
+
+                    {!isLogin && renderDropdown("Role", role, () => setShowRolePicker(true))}
+                    {!isLogin && renderDropdown("Department", department, () => setShowDeptPicker(true))}
+
+                    <View style={styles.inputGroup}>
+                        <Text style={styles.label}>Password</Text>
+                        <TextInput 
+                            style={styles.input} 
+                            placeholder="••••••••" 
+                            placeholderTextColor="#64748b"
+                            value={password}
+                            onChangeText={setPassword}
+                            secureTextEntry
+                        />
+                    </View>
+                    
+                    <TouchableOpacity style={styles.button} onPress={handleAuth} disabled={isLoading}>
+                        {isLoading ? (
+                            <ActivityIndicator color="#fff" />
+                        ) : (
+                            <Text style={styles.buttonText}>{isLogin ? "Login" : "Register"}</Text>
+                        )}
+                    </TouchableOpacity>
+
+                    {/* Toggle Button for Login/Signup */}
+                    <TouchableOpacity 
+                        style={styles.toggleContainer} 
+                        onPress={() => {
+                            setIsLogin(!isLogin);
+                            setEmail(''); setPassword(''); setUsername('');
+                        }}
+                    >
+                        <Text style={styles.toggleText}>
+                            {isLogin ? "Don't have an account? " : "Already have an account? "}
+                            <Text style={styles.toggleTextLink}>{isLogin ? "Register here" : "Login here"}</Text>
+                        </Text>
+                    </TouchableOpacity>
+
+                </ScrollView>
+            </KeyboardAvoidingView>
+
+            {/* Dropdown Modals */}
+            {renderPickerModal(showRolePicker, setShowRolePicker, roles, setRole, "Role")}
+            {renderPickerModal(showDeptPicker, setShowDeptPicker, departments, setDepartment, "Department")}
+
+        </SafeAreaView>
     );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#f1f5f9', justifyContent: 'center', padding: 20 },
-    card: { backgroundColor: '#ffffff', padding: 30, borderRadius: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 2 },
-    logoContainer: { alignItems: 'center', marginBottom: 30 },
-    headerTitle: { fontSize: 28, fontWeight: '800', color: '#1e293b', marginTop: 10 },
-    headerSubtitle: { fontSize: 14, color: '#64748b', marginTop: 5 },
+    // Dark Theme Colors matching your screenshot
+    container: { flex: 1, backgroundColor: '#2E3246' }, 
+    scrollContent: { flexGrow: 1, justifyContent: 'center', padding: 24 },
+    
+    headerTitle: { fontSize: 26, fontWeight: '700', color: '#FFFFFF', marginBottom: 30 },
+
     inputGroup: { marginBottom: 20 },
-    label: { fontSize: 13, fontWeight: '600', color: '#475569', marginBottom: 8, textTransform: 'uppercase' },
-    input: { backgroundColor: '#f8fafc', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 10, borderWidth: 1, borderColor: '#e2e8f0', fontSize: 16, color: '#1e293b' },
-    button: { backgroundColor: '#4f46e5', paddingVertical: 16, borderRadius: 10, alignItems: 'center', marginTop: 10, shadowColor: '#4f46e5', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 5 },
-    buttonText: { color: '#ffffff', fontWeight: 'bold', fontSize: 16 }
+    label: { fontSize: 14, color: '#f8fafc', marginBottom: 8, fontWeight: '500' },
+    
+    input: { 
+        backgroundColor: '#40455B', // Darker input background
+        borderWidth: 1, 
+        borderColor: '#545B77', 
+        borderRadius: 8, 
+        paddingHorizontal: 16, 
+        paddingVertical: 14, 
+        fontSize: 16, 
+        color: '#FFFFFF' 
+    },
+
+    // Custom Dropdown Styles
+    dropdownInput: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        backgroundColor: '#40455B', 
+        borderWidth: 1, 
+        borderColor: '#545B77', 
+        borderRadius: 8, 
+        paddingHorizontal: 16, 
+        paddingVertical: 14,
+    },
+    dropdownText: { fontSize: 16, color: '#FFFFFF' },
+    
+    button: { 
+        backgroundColor: '#5243F2', // Vibrant Purple from your screenshot
+        paddingVertical: 16, 
+        borderRadius: 8, 
+        alignItems: 'center', 
+        marginTop: 10, 
+        elevation: 2 
+    },
+    buttonText: { color: '#FFFFFF', fontWeight: '600', fontSize: 16 },
+
+    toggleContainer: { marginTop: 24, alignItems: 'center' },
+    toggleText: { fontSize: 14, color: '#94a3b8' },
+    toggleTextLink: { color: '#818CF8', fontWeight: '500' }, // Lighter purple for link
+
+    // Modal Picker Styles
+    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 20 },
+    modalContent: { backgroundColor: '#2E3246', borderRadius: 12, padding: 20, borderWidth: 1, borderColor: '#545B77' },
+    modalTitle: { fontSize: 18, fontWeight: '700', color: '#FFFFFF', marginBottom: 15 },
+    modalItem: { paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: '#40455B' },
+    modalItemText: { fontSize: 16, color: '#FFFFFF' }
 });

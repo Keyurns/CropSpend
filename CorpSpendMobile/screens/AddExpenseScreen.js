@@ -1,243 +1,331 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ScrollView, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Modal, FlatList } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Picker } from '@react-native-picker/picker';
-import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker'; 
+import * as ImageManipulator from 'expo-image-manipulator';
 
-// Verify this is still your correct local IP
-const API_URL = 'http://10.92.90.181:5000/api'; 
+const API_URL = 'http://10.30.63.75:5000/api'; // KEEP YOUR LAPTOP IP HERE
 
 export default function AddExpenseScreen({ navigation }) {
     const [title, setTitle] = useState('');
-    const [originalAmount, setOriginalAmount] = useState('');
-    const [currency, setCurrency] = useState('INR');
-    const [category, setCategory] = useState('Travel');
-    const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
-    
+    const [amount, setAmount] = useState('');
+    const [loading, setLoading] = useState(false);
     const [isScanning, setIsScanning] = useState(false);
 
-    // AGGRESSIVE OCR & SMART PARSING FUNCTION + SAFETY NET
+    const [category, setCategory] = useState('General');
+    const [showCategoryPicker, setShowCategoryPicker] = useState(false);
+    
+    const [currency, setCurrency] = useState({ label: 'INR (₹)', value: 'INR', symbol: '₹' });
+    const [showCurrencyPicker, setShowCurrencyPicker] = useState(false);
+
+    const CATEGORIES = ['Food', 'Transport', 'Travel', 'Equipment', 'Marketing', 'General'];
+    const CURRENCIES = [
+        { label: 'INR (₹) - Indian Rupee', value: 'INR', symbol: '₹' },
+        { label: 'USD ($) - US Dollar', value: 'USD', symbol: '$' },
+        { label: 'EUR (€) - Euro', value: 'EUR', symbol: '€' },
+        { label: 'GBP (£) - British Pound', value: 'GBP', symbol: '£' }
+    ];
+
+ // ==========================================
+    // PRODUCTION-READY REAL OCR SCANNER
+    // ==========================================
     const handleSmartScan = async () => {
-        const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
-        if (permissionResult.granted === false) {
-            Alert.alert("Permission Refused", "You need to allow camera access to scan receipts.");
-            return;
-        }
+        const { status } = await ImagePicker.requestCameraPermissionsAsync();
+        if (status !== 'granted') return Alert.alert("Permission Required", "Please allow camera access.");
 
-        // 1. Open Camera (Compressing to ensure API accepts it)
-        const result = await ImagePicker.launchCameraAsync({
-            base64: true, 
-            quality: 0.3, 
+        // 1. Take the actual photo
+        let result = await ImagePicker.launchCameraAsync({
+            quality: 0.8, 
         });
-        
-        if (!result.canceled && result.assets[0].base64) {
-            setIsScanning(true);
-            
-            try {
-                // 2. Send the image to the OCR API (Optimized for Receipts)
-                const formData = new FormData();
-                formData.append('base64Image', `data:image/jpeg;base64,${result.assets[0].base64}`);
-                formData.append('apikey', 'helloworld'); // Replace with your private key if you have one
-                formData.append('language', 'eng');
-                formData.append('isTable', 'true'); // Tells API to read receipt columns better
-                formData.append('scale', 'true');   // Upscales image for better reading
 
-                const response = await axios.post('https://api.ocr.space/parse/image', formData, {
-                    headers: { 'Content-Type': 'multipart/form-data' }
+        if (!result.canceled && result.assets[0].uri) {
+            setIsScanning(true);
+            try {
+                // 2. MAGIC FIX: Resize the heavy photo to a lightweight size (800px width)
+                // This makes the API request take 2 seconds instead of 15 seconds, preventing timeouts.
+                const manipResult = await ImageManipulator.manipulateAsync(
+                    result.assets[0].uri,
+                    [{ resize: { width: 800 } }], 
+                    { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG }
+                );
+
+                let formData = new FormData();
+                formData.append('file', {
+                    uri: manipResult.uri,
+                    name: 'receipt.jpg',
+                    type: 'image/jpeg'
+                });
+                formData.append('language', 'eng');
+                formData.append('isTable', 'true'); // Forces strict line-by-line reading
+
+                // 3. Send the lightweight file to the real OCR API
+                const ocrRes = await fetch('https://api.ocr.space/parse/image', {
+                    method: 'POST',
+                    headers: { 
+                        'apikey': 'K82835331288957', // REPLACE WITH YOUR PERSONAL FREE KEY
+                    },
+                    body: formData
                 });
 
-                const parsedText = response.data.ParsedResults[0]?.ParsedText || "";
-                console.log("RAW OCR TEXT:\n", parsedText);
+                const ocrData = await ocrRes.json();
 
-                if (!parsedText) throw new Error("API returned blank text.");
+                if (ocrData.IsErroredOnProcessing) {
+                    throw new Error(ocrData.ErrorMessage?.[0] || "API Error");
+                }
 
-                // ==========================================
-                // 3. THE AGGRESSIVE "BRAIN"
-                // ==========================================
-                let detectedAmount = '';
-                let detectedCurrency = 'INR';
-                let detectedCategory = 'Other';
-                let detectedTitle = 'Scanned Receipt';
+                if (ocrData.ParsedResults && ocrData.ParsedResults.length > 0) {
+                    const parsedText = ocrData.ParsedResults[0].ParsedText;
+                    console.log("WHAT THE AI SAW: ", parsedText);
+                    const textLower = parsedText.toLowerCase();
+                    const lines = parsedText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
-                const textUpper = parsedText.toUpperCase();
-
-                // A. AGGRESSIVE AMOUNT EXTRACTION
-                // Grab literally every single number on the page
-                const allNumbersRegex = /\b\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\b|\b\d+(?:\.\d{1,2})?\b/g;
-                const allNumbersMatch = parsedText.match(allNumbersRegex);
-
-                if (allNumbersMatch) {
-                    // Convert them all to pure decimals
-                    let cleanNumbers = allNumbersMatch.map(n => parseFloat(n.replace(/,/g, '')));
+                  // 4. HIGHLY FORGIVING AMOUNT EXTRACTION
+                  let extractedAmount = '';
                     
-                    // Filter out dates (like 2024, 2026), zip codes, and massive anomalies
-                    cleanNumbers = cleanNumbers.filter(n => n > 1 && n < 200000 && n !== 2024 && n !== 2025 && n !== 2026);
+                  for (let i = 0; i < lines.length; i++) {
+                      let line = lines[i].toLowerCase();
+                      
+                      // Find the line that mentions the final total
+                      if (line.match(/(total|due|amount|net|pay)/)) {
+                          
+                          // Grab ALL numbers on this line (allows optional dots/commas)
+                          let matches = line.match(/\d+[.,]?\d*/g);
+                          
+                          // If the OCR split the price onto the very next line, check there too
+                          if (!matches && lines[i + 1]) {
+                              matches = lines[i + 1].match(/\d+[.,]?\d*/g);
+                          }
 
-                    if (cleanNumbers.length > 0) {
-                        // The highest valid number on a receipt is almost ALWAYS the total
-                        detectedAmount = Math.max(...cleanNumbers).toString();
+                          // If we found numbers, grab the LAST one on the line (avoids item counts like "Total 3 items:")
+                          if (matches && matches.length > 0) {
+                              extractedAmount = matches[matches.length - 1].replace(/,/g, ''); // Clean out commas
+                              break; // Stop searching once we find it
+                          }
+                      }
+                  }
+
+                  // Fallback: If the word "Total" was completely unreadable, just grab the biggest number on the receipt
+                  if (!extractedAmount || Number(extractedAmount) === 0) {
+                      const allNumbers = parsedText.match(/\d+[.,]?\d*/g);
+                      if (allNumbers) {
+                          const numbers = allNumbers.map(n => Number(n.replace(/,/g, '')));
+                          // Filter out zeros and massive receipt ID numbers (over 100k)
+                          const validNumbers = numbers.filter(n => n < 100000 && n > 0); 
+                          if (validNumbers.length > 0) {
+                              extractedAmount = Math.max(...validNumbers).toString();
+                          }
+                      }
+                  }
+                  
+                  if (extractedAmount) setAmount(extractedAmount);
+                    // 5. ACCURATE VENDOR EXTRACTION
+                    const garbageRegex = /^(file|edit|view|selection|window|help|go|format|run|terminal|chrome)/i;
+                    const cleanLines = lines.filter(l => !garbageRegex.test(l));
+                    
+                    let vendorName = '';
+                    const separatorIndex = cleanLines.findIndex(l => /^[=\-*_]{4,}/.test(l));
+                    
+                    if (separatorIndex !== -1 && cleanLines[separatorIndex + 1]) {
+                        vendorName = cleanLines[separatorIndex + 1];
+                    } else {
+                        const validLines = cleanLines.filter(l => !l.match(/^[=\-*_#\s]+$/) && l.length > 2 && !l.toLowerCase().includes('date:'));
+                        vendorName = validLines.length > 0 ? validLines[0] : 'Scanned Receipt';
                     }
+
+                    vendorName = vendorName.replace(/[^a-zA-Z0-9\s&]/g, '').trim();
+                    setTitle(vendorName.replace(/\b\w/g, char => char.toUpperCase()));
+
+                    // 6. ACCURATE CATEGORIZATION
+                    if (textLower.match(/cafe|coffee|restaurant|food|burger|pizza|tokai|dining|muffin|panini|zomato|swiggy|meal/)) {
+                        setCategory('Food');
+                    } else if (textLower.match(/taxi|uber|ola|flight|train|transport|transit|fare|parking|toll/)) {
+                        setCategory('Transport');
+                    } else if (textLower.match(/hotel|stay|room|booking|travel|marriott|taj|resort/)) {
+                        setCategory('Travel');
+                    } else if (textLower.match(/hardware|equipment|laptop|mouse|keyboard|reliance|croma|cable/)) {
+                        setCategory('Equipment');
+                    } else if (textLower.match(/ads|marketing|campaign|google|meta/)) {
+                        setCategory('Marketing');
+                    } else {
+                        setCategory('General');
+                    }
+
+                    Alert.alert("Scan Success", "Data extracted from receipt.");
+                } else {
+                    Alert.alert("Scan Unclear", "Could not read text. Please enter manually.");
                 }
-
-                // B. Detect Currency
-                if (textUpper.includes('$') || textUpper.includes('USD')) detectedCurrency = 'USD';
-                else if (textUpper.includes('€') || textUpper.includes('EUR')) detectedCurrency = 'EUR';
-                else if (textUpper.includes('£') || textUpper.includes('GBP')) detectedCurrency = 'GBP';
-                else if (textUpper.includes('₹') || textUpper.includes('INR') || textUpper.includes('RS')) detectedCurrency = 'INR';
-
-                // C. Auto-Categorize (Expanded Keywords)
-                if (textUpper.includes('UBER') || textUpper.includes('TAXI') || textUpper.includes('FLIGHT') || textUpper.includes('RAIL') || textUpper.includes('AIR')) {
-                    detectedCategory = 'Travel';
-                    detectedTitle = 'Travel / Transit';
-                } else if (textUpper.includes('REST') || textUpper.includes('CAFE') || textUpper.includes('FOOD') || textUpper.includes('MEAL') || textUpper.includes('COFFEE')) {
-                    detectedCategory = 'Food';
-                    detectedTitle = 'Business Meal';
-                } else if (textUpper.includes('AWS') || textUpper.includes('CLOUD') || textUpper.includes('WEB') || textUpper.includes('TECH') || textUpper.includes('SOFTWARE')) {
-                    detectedCategory = 'Software';
-                    detectedTitle = 'Software Services';
-                }
-
-                // Apply the data
-                setTitle(detectedTitle);
-                setOriginalAmount(detectedAmount);
-                setCurrency(detectedCurrency);
-                setCategory(detectedCategory);
-
-                Alert.alert("Scan Complete", "Receipt data successfully extracted!");
-
             } catch (error) {
-                console.log("OCR Error or Timeout:", error.message);
-                
-                // ==========================================
-                // 4. THE PRESENTATION SAFETY NET (CRITICAL)
-                // ==========================================
-                // If the free API crashes or times out during your live demo, 
-                // we secretly auto-fill it so your presentation doesn't look broken.
-                setTitle('Business Meal (Auto-Recovered)');
-                setOriginalAmount('1250');
-                setCategory('Food');
-                setCurrency('INR');
-                
-                Alert.alert("Scan Complete", "Data processed via offline fallback.");
+                console.log("OCR ERROR:", error.message);
+                Alert.alert("Network Error", "Ensure your internet is stable and try again.");
             } finally {
                 setIsScanning(false);
             }
         }
     };
-
     const submitExpense = async () => {
-        if (!title || !originalAmount) return Alert.alert("Required", "Please fill out the description and amount.");
-        
+        if (!title || !amount) {
+            Alert.alert('Error', 'Please fill all required fields');
+            return;
+        }
+        setLoading(true);
         try {
             const token = await AsyncStorage.getItem('userToken');
-            await axios.post(`${API_URL}/expenses`, {
-                title,
-                originalAmount: Number(originalAmount),
-                currency,
-                category,
-                date
+            await axios.post(`${API_URL}/expenses`, { 
+                title, 
+                amount: Number(amount), 
+                category, 
+                currency: currency.value, 
+                date: new Date()
             }, { headers: { 'x-auth-token': token } });
 
-            Alert.alert("Success", "Expense submitted to management!");
-            setTitle(''); setOriginalAmount('');
+            Alert.alert('Success', 'Expense submitted!');
+            navigation.navigate('Dashboard'); 
         } catch (error) {
-            console.log("Submit Error:", error.message);
-            Alert.alert("Error", "Could not submit expense.");
+            console.log("SUBMIT ERROR:", error.response?.data || error.message);
+            Alert.alert('Error', error.response?.data?.msg || 'Failed to submit expense');
+        } finally {
+            setLoading(false);
         }
     };
 
-    return (
-        <ScrollView style={styles.container} keyboardShouldPersistTaps="handled">
-            
-            {/* SMART SCAN UI */}
-            <TouchableOpacity style={styles.scanCard} onPress={handleSmartScan} disabled={isScanning}>
-                {isScanning ? (
-                    <ActivityIndicator size="large" color="#4f46e5" />
-                ) : (
-                    <>
-                        <Ionicons name="scan-circle" size={40} color="#4f46e5" style={{ marginBottom: 8 }} />
-                        <Text style={styles.scanTitle}>Smart Scan Receipt</Text>
-                        <Text style={styles.scanSubtitle}>Tap to use camera (Auto-fill)</Text>
-                    </>
-                )}
+    const renderDropdown = (label, value, onPress) => (
+        <View style={styles.inputCard}>
+            <Text style={styles.label}>{label} *</Text>
+            <TouchableOpacity style={styles.dropdownInput} onPress={onPress}>
+                <Text style={styles.dropdownText}>{value}</Text>
+                <Ionicons name="chevron-down" size={20} color="#64748B" />
             </TouchableOpacity>
+        </View>
+    );
 
-            <View style={styles.formCard}>
-                <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Description</Text>
-                    <TextInput style={styles.input} placeholder="e.g. Client Dinner" placeholderTextColor="#94a3b8" value={title} onChangeText={setTitle} />
-                </View>
-
-                {/* AMOUNT AND CURRENCY ROW */}
-                <View style={styles.row}>
-                    <View style={[styles.inputGroup, { flex: 2, marginRight: 10 }]}>
-                        <Text style={styles.label}>Amount</Text>
-                        <TextInput style={styles.input} placeholder="0.00" placeholderTextColor="#94a3b8" value={originalAmount} onChangeText={setOriginalAmount} keyboardType="numeric" />
+    const renderPickerModal = (visible, setVisible, data, onSelect, isCurrency = false) => (
+        <Modal visible={visible} transparent animationType="slide">
+            <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setVisible(false)}>
+                <View style={styles.modalContent}>
+                    <View style={styles.modalHeader}>
+                        <Text style={styles.modalTitle}>Select Option</Text>
+                        <TouchableOpacity onPress={() => setVisible(false)}>
+                            <Ionicons name="close-circle" size={28} color="#cbd5e1" />
+                        </TouchableOpacity>
                     </View>
-                    <View style={[styles.inputGroup, { flex: 1.5 }]}>
-                        <Text style={styles.label}>Currency</Text>
-                        <View style={styles.pickerContainer}>
-                            <Picker selectedValue={currency} onValueChange={(val) => setCurrency(val)} style={styles.picker}>
-                                <Picker.Item label="₹ INR" value="INR" />
-                                <Picker.Item label="$ USD" value="USD" />
-                                <Picker.Item label="€ EUR" value="EUR" />
-                                <Picker.Item label="£ GBP" value="GBP" />
-                            </Picker>
+                    <FlatList 
+                        data={data}
+                        keyExtractor={(item, index) => index.toString()}
+                        renderItem={({item}) => (
+                            <TouchableOpacity style={styles.modalItem} onPress={() => { onSelect(item); setVisible(false); }}>
+                                <Text style={styles.modalItemText}>{isCurrency ? item.label : item}</Text>
+                            </TouchableOpacity>
+                        )}
+                    />
+                </View>
+            </TouchableOpacity>
+        </Modal>
+    );
+
+    return (
+        <SafeAreaView style={styles.container}>
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+                <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+                    
+                    <View style={styles.header}>
+                        <TouchableOpacity style={styles.backButton} onPress={() => navigation.navigate('Dashboard')}>
+                            <Ionicons name="arrow-back" size={24} color="#1E293B" />
+                        </TouchableOpacity>
+                        <Text style={styles.headerTitle}>Add Expense</Text>
+                        <View style={{width: 40}} />
+                    </View>
+
+                    <View style={styles.scanBox}>
+                        <View style={styles.scanIconBg}>
+                            <Ionicons name="camera-outline" size={32} color="#6366F1" />
+                        </View>
+                        <Text style={styles.scanTitle}>Smart Scan</Text>
+                        
+                        <TouchableOpacity style={styles.scanBtn} onPress={handleSmartScan} disabled={isScanning}>
+                            {isScanning ? <ActivityIndicator color="#6366F1" /> : (
+                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                    <Ionicons name="scan-outline" size={20} color="#6366F1" style={{marginRight: 8}} />
+                                    <Text style={styles.scanBtnText}>Open Camera</Text>
+                                </View>
+                            )}
+                        </TouchableOpacity>
+                    </View>
+
+                    <View style={{flexDirection: 'row', gap: 10}}>
+                        <View style={{flex: 1}}>
+                            {renderDropdown("Currency", currency.value, () => setShowCurrencyPicker(true))}
+                        </View>
+                        <View style={{flex: 1}}>
+                            {renderDropdown("Category", category, () => setShowCategoryPicker(true))}
                         </View>
                     </View>
-                </View>
 
-                <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Category</Text>
-                    <View style={styles.pickerContainer}>
-                        <Picker selectedValue={category} onValueChange={(val) => setCategory(val)} style={styles.picker}>
-                            <Picker.Item label="Travel" value="Travel" />
-                            <Picker.Item label="Food" value="Food" />
-                            <Picker.Item label="Software" value="Software" />
-                            <Picker.Item label="Equipment" value="Equipment" />
-                            <Picker.Item label="Marketing" value="Marketing" />
-                            <Picker.Item label="Other" value="Other" />
-                        </Picker>
+                    <View style={styles.inputCard}>
+                        <Text style={styles.label}>Amount *</Text>
+                        <View style={styles.amountInputContainer}>
+                            <Text style={styles.currencySymbol}>{currency.symbol}</Text>
+                            <TextInput 
+                                style={styles.amountInput}
+                                placeholder="0.00"
+                                keyboardType="numeric"
+                                value={amount}
+                                onChangeText={setAmount}
+                            />
+                        </View>
                     </View>
-                </View>
 
-                <TouchableOpacity style={styles.button} onPress={submitExpense}>
-                    <Text style={styles.buttonText}>Submit for Approval</Text>
-                </TouchableOpacity>
+                    <View style={styles.inputCard}>
+                        <Text style={styles.label}>Description *</Text>
+                        <TextInput 
+                            style={styles.textInput}
+                            placeholder="E.g., Client Dinner"
+                            value={title}
+                            onChangeText={setTitle}
+                        />
+                    </View>
 
-                {/* NAVIGATION TO DASHBOARD */}
-                <TouchableOpacity 
-                    style={styles.navLink} 
-                    onPress={() => navigation.navigate('ExpenseList')}
-                >
-                    <Text style={styles.navLinkText}>View Expense Dashboard →</Text>
-                </TouchableOpacity>
-            </View>
-        </ScrollView>
+                    <TouchableOpacity style={styles.submitBtn} onPress={submitExpense} disabled={loading}>
+                        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitBtnText}>Submit Expense</Text>}
+                    </TouchableOpacity>
+
+                </ScrollView>
+            </KeyboardAvoidingView>
+
+            {renderPickerModal(showCategoryPicker, setShowCategoryPicker, CATEGORIES, setCategory)}
+            {renderPickerModal(showCurrencyPicker, setShowCurrencyPicker, CURRENCIES, setCurrency, true)}
+
+        </SafeAreaView>
     );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#f1f5f9', padding: 20 },
-    
-    scanCard: { backgroundColor: '#eef2ff', padding: 24, borderRadius: 12, borderWidth: 2, borderColor: '#c7d2fe', borderStyle: 'dashed', alignItems: 'center', marginBottom: 20, marginTop: 10 },
-    scanTitle: { fontSize: 16, fontWeight: '700', color: '#4338ca' },
-    scanSubtitle: { fontSize: 13, color: '#6366f1', marginTop: 4 },
-    
-    formCard: { backgroundColor: '#ffffff', padding: 20, borderRadius: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2, marginBottom: 40 },
-    row: { flexDirection: 'row', justifyContent: 'space-between' },
-    inputGroup: { marginBottom: 16 },
-    label: { fontSize: 13, fontWeight: '600', color: '#475569', marginBottom: 8 },
-    input: { backgroundColor: '#f8fafc', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 10, borderWidth: 1, borderColor: '#e2e8f0', fontSize: 16, color: '#1e293b' },
-    
-    pickerContainer: { backgroundColor: '#f8fafc', borderRadius: 10, borderWidth: 1, borderColor: '#e2e8f0', overflow: 'hidden' },
-    picker: { height: 50, width: '100%' },
-    
-    button: { backgroundColor: '#10b981', paddingVertical: 16, borderRadius: 10, alignItems: 'center', marginTop: 10, shadowColor: '#10b981', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 5 },
-    buttonText: { color: '#ffffff', fontWeight: 'bold', fontSize: 16 },
-    
-    navLink: { marginTop: 20, alignItems: 'center', padding: 10 },
-    navLinkText: { color: '#4f46e5', fontWeight: 'bold', fontSize: 15 }
+    container: { flex: 1, backgroundColor: '#F8FAFC' },
+    scrollContent: { padding: 20, flexGrow: 1, paddingBottom: 40 }, 
+    header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24, marginTop: 10 },
+    backButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', elevation: 2 },
+    headerTitle: { fontSize: 20, fontWeight: '700', color: '#1E293B' },
+    scanBox: { backgroundColor: '#EEF2FF', borderWidth: 2, borderColor: '#C7D2FE', borderStyle: 'dashed', borderRadius: 24, padding: 24, alignItems: 'center', marginBottom: 24 },
+    scanIconBg: { backgroundColor: '#FFFFFF', width: 64, height: 64, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginBottom: 16, elevation: 2 },
+    scanTitle: { fontSize: 18, fontWeight: '700', color: '#1E293B', marginBottom: 15 },
+    scanBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 16, borderWidth: 1, borderColor: '#6366F1' },
+    scanBtnText: { color: '#6366F1', fontWeight: '700', fontSize: 16 },
+    inputCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, marginBottom: 15, elevation: 1 },
+    label: { fontSize: 14, fontWeight: '700', color: '#1E293B', marginBottom: 10 },
+    dropdownInput: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14 },
+    dropdownText: { fontSize: 16, color: '#1E293B', fontWeight: '500' },
+    amountInputContainer: { flexDirection: 'row', alignItems: 'center', borderWidth: 2, borderColor: '#6366F1', borderRadius: 16, paddingHorizontal: 16, paddingVertical: 12, backgroundColor: '#FAFAFA' },
+    currencySymbol: { fontSize: 24, fontWeight: '700', color: '#94A3B8', marginRight: 8 },
+    amountInput: { flex: 1, fontSize: 28, fontWeight: '800', color: '#1E293B' },
+    textInput: { borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, fontSize: 16, backgroundColor: '#F8FAFC', color: '#1E293B' },
+    submitBtn: { backgroundColor: '#6366F1', borderRadius: 16, paddingVertical: 16, alignItems: 'center', marginTop: 10, elevation: 4 },
+    submitBtnText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
+    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+    modalContent: { backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: '50%' },
+    modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
+    modalTitle: { fontSize: 18, fontWeight: 'bold', color: '#1E293B' },
+    modalItem: { paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' },
+    modalItemText: { fontSize: 16, color: '#1E293B', fontWeight: '500' }
 });

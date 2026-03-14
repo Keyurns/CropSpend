@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 exports.register = async (req, res) => {
     const { username, email, password, department } = req.body;
     console.log('Register attempt:', email || '(no email)');
+    
     if (!email || !password || !username) {
         return res.status(400).json({ msg: 'Username, email and password are required' });
     }
@@ -12,12 +13,14 @@ exports.register = async (req, res) => {
         console.error('JWT_SECRET is not set in .env');
         return res.status(500).json({ msg: 'Server misconfiguration' });
     }
+    
     try {
         let user = await User.findOne({ email: email.trim().toLowerCase() });
         if (user) return res.status(400).json({ msg: 'User already exists' });
 
         const role = (req.body.role && ['employee', 'manager', 'admin'].includes(req.body.role))
             ? req.body.role : 'employee';
+            
         user = new User({
             username: (username || '').trim(),
             email: email.trim().toLowerCase(),
@@ -37,7 +40,8 @@ exports.register = async (req, res) => {
                 console.error('JWT sign error:', err.message);
                 return res.status(500).json({ msg: 'Server error' });
             }
-            res.json({ token, role: user.role });
+            // UPDATED: Now returns the username to the frontend
+            res.json({ token, role: user.role, username: user.username });
         });
     } catch (err) {
         console.error('Register error:', err.message);
@@ -57,6 +61,7 @@ exports.login = async (req, res) => {
     if (!email || !password) {
         return res.status(400).json({ msg: 'Email and password are required' });
     }
+    
     try {
         let user = await User.findOne({ email: email.trim().toLowerCase() });
         if (!user) return res.status(400).json({ msg: 'Invalid Credentials' });
@@ -67,7 +72,8 @@ exports.login = async (req, res) => {
         const payload = { user: { id: user.id, role: user.role, name: user.username } };
         jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: 360000 }, (err, token) => {
             if (err) throw err;
-            res.json({ token, role: user.role });
+            // UPDATED: Now returns the username to the frontend
+            res.json({ token, role: user.role, username: user.username });
         });
     } catch (err) {
         console.error(err.message);
