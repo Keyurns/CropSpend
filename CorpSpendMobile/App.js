@@ -1,27 +1,41 @@
+import 'react-native-gesture-handler';
 import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { createStackNavigator } from '@react-navigation/stack';
+import { ThemeProvider } from './constants/ThemeContext';
 
 // Import your screens
 import LoginScreen from './screens/LoginScreen';
 import ExpenseListScreen from './screens/ExpenseListScreen';
 import AddExpenseScreen from './screens/AddExpenseScreen';
+import ProfileScreen from './screens/ProfileScreen'; 
+import AdminDashboardScreen from './screens/AdminDashboardScreen';
 
-const Stack = createNativeStackNavigator();
+
+
+const Stack = createStackNavigator();
 
 export default function App() {
   return (
-    <SafeAreaProvider>
+    <ThemeProvider>
       <NavigationContainer>
-        {/* headerShown: false removes the ugly double-headers */}
-        <Stack.Navigator initialRouteName="Login" screenOptions={{ headerShown: false }}>
+        <Stack.Navigator 
+          initialRouteName="Login"
+          screenOptions={{
+            headerShown: false, // We use custom headers in our screens
+            animationEnabled: true,
+            gestureEnabled: true
+          }}
+        >
+          
           <Stack.Screen name="Login" component={LoginScreen} />
-          {/* Make sure the name is EXACTLY "Dashboard" so the login screen routes here */}
           <Stack.Screen name="Dashboard" component={ExpenseListScreen} />
           <Stack.Screen name="AddExpense" component={AddExpenseScreen} />
+          <Stack.Screen name="Profile" component={ProfileScreen} />
+          <Stack.Screen name="AdminDashboard" component={AdminDashboardScreen} />
+          
         </Stack.Navigator>
       </NavigationContainer>
-    </SafeAreaProvider>
+    </ThemeProvider>
   );
 }

@@ -1,50 +1,136 @@
-# Welcome to your Expo app 👋
+CROPSpend Enterprise Expense Management
+CROPSpend is a full-stack, cross-platform expense management system designed for modern enterprises. It features a React Web Dashboard for managers, a React Native Mobile App for on-the-go employees, and a unified Node.js/MongoDB backend.
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+The system includes AI-powered receipt scanning, strict Identity and Access Management (IAM), dynamic theming, and automated email notifications.
 
-## Get started
+ Key Features
+ Identity & Access Management (IAM)
+ID Verification: New users must upload a government/company ID proof during registration.
 
-1. Install dependencies
+Admin Quarantine: New accounts are placed in a "Pending" state and cannot log in until reviewed.
 
-   ```bash
-   npm install
-   ```
+Role-Based Access Control (RBAC): Three distinct tiers (Admin, Manager, Employee) with protected routes.
 
-2. Start the app
+Admin Control Panel: Dedicated screens (Web & Mobile) to review ID proofs, assign roles, and approve/reject users.
 
-   ```bash
-   npx expo start
-   ```
+ Smart Receipt Scanning (OCR)
+Mobile Camera Integration: Snap receipts directly using the Expo Camera.
 
-In the output, you'll find options to open the app in a
+Image Optimization: Auto-resizes heavy images before uploading to save bandwidth and speed up processing.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+AI Extraction: Uses OCR.space API to intelligently extract the Merchant Name, Total Amount, and automatically categorize the expense (e.g., Food, Travel, Equipment).
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+ Expense & Budget Tracking
+Multi-Currency Support: Log expenses in INR, USD, EUR, or GBP.
 
-## Get a fresh project
+Dynamic Dashboards: Employees see their personal monthly spending; Managers see company-wide totals.
 
-When you're ready, run:
+AI Anomaly Detection: Flags suspicious transactions with high amounts or unusual categories for strict manager review.
 
-```bash
-npm run reset-project
-```
+Approval Workflow: Managers can Approve or Reject expenses. Rejections trigger a prompt for a "Reason."
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Automated Communications
+NodeMailer Integration: Sends automated emails via Gmail (using secure App Passwords).
 
-## Learn more
+Status Updates: Employees receive instant email notifications when their expense is approved or rejected (including the manager's reason).
 
-To learn more about developing your project with Expo, look at the following resources:
+Modern UI/UX
+Cross-Platform Theme Engine: Global Dark/Light mode toggle that syncs instantly across Web and Mobile.
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+Pull-to-Refresh: Native mobile gesture to fetch live data.
 
-## Join the community
+Cloudinary Profiles: Users can upload profile pictures via their phone gallery or web browser.
 
-Join our community of developers creating universal apps.
+Tech Stack
+Frontend (Web):
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+React.js
+
+Tailwind CSS
+
+Context API (State & Theme Management)
+
+Frontend (Mobile):
+
+React Native (Expo)
+
+React Navigation (Stack)
+
+Expo Image Picker & Manipulator
+
+AsyncStorage
+
+Backend:
+
+Node.js & Express.js
+
+MongoDB & Mongoose
+
+Cloudinary & Multer (Image Storage)
+
+NodeMailer (Email Services)
+
+JSON Web Tokens (JWT) & Bcrypt
+
+Project Structure
+Plaintext
+CROPSpend/
+├── server/                 # Node.js/Express Backend
+│   ├── models/             # Mongoose Schemas (User, Expense)
+│   ├── routes/             # API Endpoints (Auth, Users, Expenses)
+│   ├── middleware/         # JWT Auth & Multer/Cloudinary upload
+│   └── server.js           # Entry point
+├── web/                    # React Web Application
+│   ├── src/components/     # UI Components & Pages
+│   └── src/context/        # ThemeContext
+└── CorpSpendMobile/        # React Native Mobile App
+    ├── screens/            # App Screens (Login, Dashboard, Admin)
+    ├── scripts/            # Auto-IP generation scripts
+    └── App.js              # Mobile Entry & Navigation
+Installation & Setup
+Prerequisites
+Node.js installed
+
+MongoDB connection URI (Atlas or Local)
+
+Cloudinary Account (Cloud Name, API Key, API Secret)
+
+Gmail Account with an "App Password" generated for NodeMailer
+
+1. Backend Setup
+Bash
+cd server
+npm install
+Create a .env file in the server directory:
+
+Code snippet
+PORT=5000
+MONGO_URI=your_mongodb_connection_string
+JWT_SECRET=your_super_secret_jwt_key
+CLOUDINARY_CLOUD_NAME=your_cloud_name
+CLOUDINARY_API_KEY=your_api_key
+CLOUDINARY_API_SECRET=your_api_secret
+EMAIL_USER=your_gmail_address@gmail.com
+EMAIL_PASS=your_16_digit_google_app_password
+Start the backend:
+
+Bash
+npm start
+2. Web Frontend Setup
+Bash
+cd web
+npm install
+npm start
+3. Mobile App Setup
+Bash
+cd CorpSpendMobile
+npm install
+Important: The mobile app needs to know your laptop's local IP address to talk to the backend. We created a script for this!
+
+Bash
+# This detects your IP, creates Config.js, and starts Expo
+npm start
+Scan the QR code with the Expo Go app on your physical iOS or Android device. (Ensure your phone and laptop are on the same Wi-Fi network).
+
+Default Admin Access
+To access the IAM Control Panel upon first launch, register a new user. Then, access your MongoDB database and manually change that user's role to admin and status to Approved. From then on, you can approve all other users directly from the Admin Dashboard!

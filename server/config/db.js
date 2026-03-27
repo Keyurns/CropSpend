@@ -12,7 +12,8 @@ const isSrvRefused = (err) =>
   );
 
 const connectDB = async (onSuccess) => {
-  const srvURI = process.env.MONGODB_URI || 'mongodb+srv://keyurkns2004:keyur7604@cluster0.hln29kt.mongodb.net/expense-tracker';
+  // Prefer environment variables. Default to local dev MongoDB to avoid hardcoding credentials.
+  const srvURI = process.env.MONGODB_URI || 'mongodb://localhost:27017/crospend';
   const directURI = process.env.MONGODB_URI_DIRECT;
   const options = { useNewUrlParser: true, useUnifiedTopology: true };
 

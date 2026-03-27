@@ -1,212 +1,207 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useContext } from 'react';
 import axios from 'axios';
 import Sidebar from './Sidebar';
-import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title } from 'chart.js';
-import { Doughnut, Bar } from 'react-chartjs-2';
 import { API } from '../config';
-
-ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
-
-const EXPENSES_API = API.EXPENSES;
+import { ThemeContext } from './ThemeContext';
 
 const Reports = () => {
     const [expenses, setExpenses] = useState([]);
-    const [emailModal, setEmailModal] = useState(false);
-    const [emailTo, setEmailTo] = useState('');
-    const [emailSending, setEmailSending] = useState(false);
-    const [emailMessage, setEmailMessage] = useState(null);
-    const [previewUrl, setPreviewUrl] = useState(null);
+    const [filter, setFilter] = useState('All'); 
+    const [isExporting, setIsExporting] = useState(false);
+    
+    // --- NEW MODAL STATES ---
+    const [showEmailModal, setShowEmailModal] = useState(false);
+    const [recipientEmail, setRecipientEmail] = useState('');
+    const [isEmailing, setIsEmailing] = useState(false);
+
+    const { theme } = useContext(ThemeContext);
     const token = localStorage.getItem('token');
-    const headers = { 'x-auth-token': token };
+    const role = localStorage.getItem('role') || 'employee';
 
     const fetchExpenses = async () => {
         try {
-            const res = await axios.get(EXPENSES_API, { headers });
+            const res = await axios.get(API.EXPENSES, { headers: { 'x-auth-token': token } });
             setExpenses(res.data);
-        } catch (err) {
-            console.error(err);
-        }
+        } catch (err) { console.error(err); }
     };
 
-    useEffect(() => {
-        fetchExpenses();
-    }, []);
+    useEffect(() => { fetchExpenses(); }, []);
 
-    const handleDownloadCsv = async () => {
-        try {
-            const res = await axios.get(`${EXPENSES_API}/export/csv`, { headers, responseType: 'blob' });
-            const url = window.URL.createObjectURL(res.data);
-            const link = document.createElement('a');
-            link.href = url;
-            const disposition = res.headers['content-disposition'];
-            const match = disposition && disposition.match(/filename="?([^"]+)"?/);
-            link.setAttribute('download', match ? match[1].trim() : `expense-report-${new Date().toISOString().slice(0, 10)}.csv`);
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            window.URL.revokeObjectURL(url);
-        } catch (err) {
-            console.error(err);
-            const msg = err.response?.data instanceof Blob ? 'Failed to download CSV' : (err.response?.data?.msg || 'Failed to download CSV');
-            alert(msg);
-        }
+    const filteredExpenses = expenses.filter(expense => {
+        if (filter === 'All') return true;
+        if (filter === 'Flagged') return expense.isFlagged === true;
+        return expense.status === filter;
+    });
+
+    const generateCSVString = () => {
+        const headers = ['Date', 'Employee', 'Department', 'Merchant/Description', 'Category', 'Original Amount', 'Currency', 'Base Amount (INR)', 'Status', 'AI Flagged', 'Flag Reason'];
+        const csvData = filteredExpenses.map(e => [
+            new Date(e.date).toLocaleDateString('en-GB'),
+            e.requestedBy?.username || 'Unknown',
+            e.requestedBy?.department || 'N/A',
+            e.title, e.category, e.originalAmount, e.currency, e.amount, e.status,
+            e.isFlagged ? 'YES' : 'NO', e.flagReason || ''
+        ]);
+        return [headers.join(','), ...csvData.map(row => row.map(cell => `"${cell}"`).join(','))].join('\n');
     };
 
-    const handleSendEmail = async (e) => {
+    const handleDownloadCSV = () => {
+        setIsExporting(true);
+        const csvContent = generateCSVString();
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', `CROPSPEND_Report_${filter}_${new Date().toISOString().split('T')[0]}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setIsExporting(false);
+    };
+
+    // --- UPDATED: Email Report Function ---
+    const handleEmailReport = async (e) => {
         e.preventDefault();
-        if (!emailTo.trim()) return;
-        setEmailSending(true);
-        setEmailMessage(null);
-        setPreviewUrl(null);
+        if (!recipientEmail) return;
+        
+        setIsEmailing(true);
         try {
-            const res = await axios.post(`${EXPENSES_API}/send-report`, { email: emailTo.trim() }, { headers });
-            setEmailMessage({ type: 'success', text: res.data.msg });
-            if (res.data.previewUrl) {
-                setPreviewUrl(res.data.previewUrl);
-            } else {
-                setEmailTo('');
-                setTimeout(() => { setEmailModal(false); setEmailMessage(null); }, 2000);
-            }
+            const csvContent = generateCSVString();
+            await axios.post(`${API.EXPENSES}/email-report`, {
+                csvData: csvContent,
+                filterName: filter,
+                recipientEmail: recipientEmail // Pass the destination address
+            }, {
+                headers: { 'x-auth-token': token }
+            });
+            
+            setShowEmailModal(false);
+            setRecipientEmail('');
+            alert(`Report successfully sent to ${recipientEmail}!`);
         } catch (err) {
-            setEmailMessage({ type: 'error', text: err.response?.data?.msg || 'Failed to send email' });
+            console.error(err);
+            alert('Failed to send email report. Please try again.');
         } finally {
-            setEmailSending(false);
+            setIsEmailing(false);
         }
     };
 
-    const byCategory = expenses.reduce((acc, e) => {
-        const c = e.category || 'Other';
-        acc[c] = (acc[c] || 0) + Number(e.amount);
-        return acc;
-    }, {});
+    const formatINR = (amount) => new Intl.NumberFormat('en-IN').format(amount);
+    const formatDate = (date) => date ? new Date(date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 
-    const byStatus = expenses.reduce((acc, e) => {
-        const s = e.status || 'Pending';
-        acc[s] = (acc[s] || 0) + 1;
-        return acc;
-    }, {});
-
-    const total = expenses.reduce((acc, e) => acc + Number(e.amount || 0), 0);
-    const categoryLabels = Object.keys(byCategory);
-    const categoryValues = Object.values(byCategory);
-    const colors = ['#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#3b82f6'];
-
-    const doughnutData = {
-        labels: categoryLabels,
-        datasets: [{
-            data: categoryValues,
-            backgroundColor: colors.slice(0, categoryLabels.length),
-            borderWidth: 0
-        }]
-    };
-
-    const statusData = {
-        labels: ['Pending', 'Approved', 'Rejected'],
-        datasets: [{
-            label: 'Count',
-            data: [byStatus.Pending || 0, byStatus.Approved || 0, byStatus.Rejected || 0],
-            backgroundColor: ['#f59e0b', '#10b981', '#ef4444']
-        }]
+    const FilterButton = ({ label }) => {
+        const isActive = filter === label;
+        return (
+            <button onClick={() => setFilter(label)} className={`px-4 py-2 text-sm font-semibold rounded-lg transition-colors duration-200 ${isActive ? 'bg-[#5B58FF] text-white shadow-sm' : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
+                {label}
+            </button>
+        );
     };
 
     return (
-        <div className="flex h-screen bg-slate-100">
+        <div className="flex h-screen bg-[#F8F9FA] dark:bg-slate-950 font-sans text-slate-800 dark:text-slate-200 transition-colors duration-200">
             <Sidebar page="reports" />
-            <div className="flex-1 overflow-auto">
-                <div className="bg-white border-b border-slate-200 px-8 py-6 shadow-sm">
-                    <div className="flex flex-wrap items-center justify-between gap-4">
-                        <div>
-                            <h1 className="text-2xl font-bold text-slate-900">Reports</h1>
-                            <p className="text-slate-500 mt-0.5">Expense analytics and summaries</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <button onClick={handleDownloadCsv} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white font-medium rounded-lg shadow-sm transition flex items-center gap-2">
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                                Download CSV
-                            </button>
-                            <button onClick={() => { setEmailModal(true); setEmailMessage(null); setEmailTo(''); setPreviewUrl(null); }} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg shadow-sm transition flex items-center gap-2">
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
-                                Email report
-                            </button>
-                        </div>
+            
+            <div className="flex-1 overflow-auto flex flex-col">
+                <div className="px-8 py-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div>
+                        <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">Reports & Analytics</h1>
+                        <p className="text-sm font-medium text-slate-500 dark:text-slate-400 mt-1">Review transaction history and export compliance data.</p>
+                    </div>
+
+                    <div className="flex gap-3">
+                        {/* Changed this button to open the modal instead of instantly firing */}
+                        <button onClick={() => setShowEmailModal(true)} disabled={filteredExpenses.length === 0} className="px-4 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-[#5B58FF] dark:hover:border-[#5B58FF] text-slate-700 dark:text-slate-200 text-sm font-semibold rounded-lg shadow-sm transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed group">
+                            <svg className="w-4 h-4 text-slate-400 group-hover:text-[#5B58FF] transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+                            Email Report
+                        </button>
+                        
+                        <button onClick={handleDownloadCSV} disabled={isExporting || filteredExpenses.length === 0} className="px-4 py-2.5 bg-[#5B58FF] hover:bg-blue-700 text-white text-sm font-semibold rounded-lg shadow-sm transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                            {isExporting ? 'Downloading...' : 'Download CSV'}
+                        </button>
                     </div>
                 </div>
-                <div className="p-8">
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-                        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-                            <h2 className="text-lg font-semibold text-slate-900 mb-4">Spend by category</h2>
-                            <div className="h-64 flex items-center justify-center">
-                                {categoryLabels.length > 0 ? (
-                                    <Doughnut data={doughnutData} options={{ maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }} />
-                                ) : (
-                                    <p className="text-slate-500">No expense data yet</p>
-                                )}
-                            </div>
+
+                <main className="px-8 pb-8 flex-1 flex flex-col">
+                    <div className="flex flex-wrap gap-2 mb-6">
+                        <FilterButton label="All" />
+                        <FilterButton label="Pending" />
+                        <FilterButton label="Approved" />
+                        <FilterButton label="Rejected" />
+                        {(role === 'manager' || role === 'admin') && <FilterButton label="Flagged" />}
+                    </div>
+
+                    <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-800 flex-1 overflow-hidden transition-colors flex flex-col">
+                        <div className="px-6 py-4 border-b border-slate-50 dark:border-slate-800/50 flex justify-between items-center">
+                            <h2 className="text-sm font-semibold text-slate-900 dark:text-white">Transaction Data <span className="text-slate-400 font-normal ml-2">({filteredExpenses.length} records)</span></h2>
                         </div>
-                        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-                            <h2 className="text-lg font-semibold text-slate-900 mb-4">Requests by status</h2>
-                            <div className="h-64 flex items-center justify-center">
-                                {expenses.length > 0 ? (
-                                    <Bar data={statusData} options={{ indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true } } }} />
-                                ) : (
-                                    <p className="text-slate-500">No expense data yet</p>
-                                )}
-                            </div>
+                        
+                        <div className="overflow-x-auto flex-1">
+                            <table className="w-full text-left text-sm">
+                                <thead className="bg-slate-50/50 dark:bg-slate-900 sticky top-0">
+                                    <tr className="text-slate-500 dark:text-slate-400">
+                                        <th className="px-6 py-4 font-semibold border-b border-r border-slate-100 dark:border-slate-800">Date</th>
+                                        <th className="px-6 py-4 font-semibold border-b border-r border-slate-100 dark:border-slate-800">Employee</th>
+                                        <th className="px-6 py-4 font-semibold border-b border-r border-slate-100 dark:border-slate-800">Merchant</th>
+                                        <th className="px-6 py-4 font-semibold border-b border-r border-slate-100 dark:border-slate-800">Category</th>
+                                        <th className="px-6 py-4 font-semibold border-b border-r border-slate-100 dark:border-slate-800">Amount</th>
+                                        <th className="px-6 py-4 font-semibold border-b border-slate-100 dark:border-slate-800">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {filteredExpenses.length === 0 && <tr><td colSpan="6" className="px-6 py-12 text-center text-slate-400">No records found for this filter.</td></tr>}
+                                    {filteredExpenses.map((expense) => (
+                                        <tr key={expense._id} className="border-b border-slate-50 dark:border-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                                            <td className="px-6 py-4 font-medium text-slate-700 dark:text-slate-300 border-r border-slate-100 dark:border-slate-800 whitespace-nowrap">{formatDate(expense.date)}</td>
+                                            <td className="px-6 py-4 border-r border-slate-100 dark:border-slate-800 whitespace-nowrap">
+                                                <div className="text-slate-700 dark:text-slate-300 font-medium">{expense.requestedBy?.username?.toUpperCase() || 'UNKNOWN'}</div>
+                                                <div className="text-xs text-slate-400">{expense.requestedBy?.department || 'N/A'}</div>
+                                            </td>
+                                            <td className="px-6 py-4 text-slate-600 dark:text-slate-400 border-r border-slate-100 dark:border-slate-800">{expense.title}</td>
+                                            <td className="px-6 py-4 text-slate-600 dark:text-slate-400 border-r border-slate-100 dark:border-slate-800">{expense.category}</td>
+                                            <td className="px-6 py-4 border-r border-slate-100 dark:border-slate-800 whitespace-nowrap">
+                                                <div className="flex flex-col">
+                                                    <span className="font-bold text-slate-900 dark:text-white">₹ {formatINR(expense.amount)}</span>
+                                                    {expense.currency !== 'INR' && <span className="text-[10px] text-slate-400 font-semibold mt-0.5">({expense.originalAmount} {expense.currency})</span>}
+                                                    {expense.isFlagged && (role === 'manager' || role === 'admin') && <div className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-bold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 px-2 py-0.5 rounded border border-red-200 dark:border-red-800/50 w-max" title={expense.flagReason}>⚠️ ANOMALY</div>}
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4"><span className={`inline-flex px-3 py-1 rounded text-xs font-bold ${expense.status === 'Approved' ? 'bg-[#E6F4EA] dark:bg-green-900/30 text-[#1E8E3E] dark:text-green-400' : expense.status === 'Pending' ? 'bg-[#FFF8E1] dark:bg-yellow-900/30 text-[#F9A825] dark:text-yellow-400' : 'bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400'}`}>{expense.status}</span></td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
                         </div>
                     </div>
-                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                        <div className="px-6 py-4 border-b border-slate-200">
-                            <h2 className="text-lg font-semibold text-slate-900">Summary</h2>
-                        </div>
-                        <div className="p-6 grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <div className="p-4 bg-slate-50 rounded-lg">
-                                <p className="text-sm text-slate-500">Total amount</p>
-                                <p className="text-xl font-bold text-slate-900">₹{total.toLocaleString()}</p>
-                            </div>
-                            <div className="p-4 bg-amber-50 rounded-lg">
-                                <p className="text-sm text-slate-500">Pending</p>
-                                <p className="text-xl font-bold text-amber-700">{byStatus.Pending || 0}</p>
-                            </div>
-                            <div className="p-4 bg-emerald-50 rounded-lg">
-                                <p className="text-sm text-slate-500">Approved</p>
-                                <p className="text-xl font-bold text-emerald-700">{byStatus.Approved || 0}</p>
-                            </div>
-                            <div className="p-4 bg-red-50 rounded-lg">
-                                <p className="text-sm text-slate-500">Rejected</p>
-                                <p className="text-xl font-bold text-red-700">{byStatus.Rejected || 0}</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                </main>
             </div>
 
-            {emailModal && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !emailSending && setEmailModal(false)}>
-                    <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6" onClick={e => e.stopPropagation()}>
-                        <h3 className="text-lg font-semibold text-slate-900 mb-2">Email expense report</h3>
-                        <p className="text-sm text-slate-500 mb-4">Send the current expense report as a formatted email to the address below.</p>
-                        <form onSubmit={handleSendEmail} className="space-y-4">
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700 mb-1">Recipient email</label>
-                                <input type="email" value={emailTo} onChange={e => setEmailTo(e.target.value)} placeholder="colleague@company.com"
-                                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent" required disabled={emailSending} />
+            {/* --- NEW EMAIL MODAL --- */}
+            {showEmailModal && (
+                <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={() => setShowEmailModal(false)}>
+                    <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl max-w-md w-full p-6 transition-colors" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-2">Send Report via Email</h3>
+                        <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">This will generate a CSV file for the "{filter}" filter and send it to the address below.</p>
+                        
+                        <form onSubmit={handleEmailReport}>
+                            <div className="mb-6">
+                                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Recipient Email Address</label>
+                                <input 
+                                    type="email" 
+                                    required 
+                                    value={recipientEmail} 
+                                    onChange={e => setRecipientEmail(e.target.value)} 
+                                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-[#5B58FF] outline-none transition-all text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500" 
+                                    placeholder="e.g. accounting@company.com" 
+                                />
                             </div>
-                            {emailMessage && (
-                                <div className={`text-sm ${emailMessage.type === 'success' ? 'text-emerald-600' : 'text-red-600'}`}>
-                                    <p>{emailMessage.text}</p>
-                                    {previewUrl && (
-                                        <a href={previewUrl} target="_blank" rel="noopener noreferrer" 
-                                           className="inline-block mt-2 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700">
-                                            View Email Preview →
-                                        </a>
-                                    )}
-                                </div>
-                            )}
-                            <div className="flex gap-2">
-                                <button type="submit" disabled={emailSending} className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-medium rounded-lg">
-                                    {emailSending ? 'Sending…' : 'Send'}
+                            
+                            <div className="flex gap-3">
+                                <button type="button" onClick={() => setShowEmailModal(false)} className="flex-1 px-4 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">Cancel</button>
+                                <button type="submit" disabled={isEmailing} className="flex-1 py-2.5 bg-[#5B58FF] hover:bg-blue-700 text-white font-semibold rounded-lg shadow-sm transition-colors disabled:opacity-70 flex items-center justify-center gap-2">
+                                    {isEmailing ? 'Sending...' : 'Send Report'}
                                 </button>
-                                <button type="button" onClick={() => !emailSending && setEmailModal(false)} className="px-4 py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50" disabled={emailSending}>Cancel</button>
                             </div>
                         </form>
                     </div>

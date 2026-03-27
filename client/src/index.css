@@ -1,3 +1,25 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    /* 1. Sets the default font to sans-serif
+      2. Makes the text slightly crisper (antialiased) which looks great on light themes
+      3. Sets the default light theme text color 
+    */
+    @apply font-sans antialiased text-slate-800 transition-colors duration-200;
+  }
+  
+  .dark body {
+    /* 1. Changes the global text color for dark mode
+      2. Switches to subpixel-antialiasing, which makes light text on dark backgrounds much easier to read
+    */
+    @apply text-slate-200 subpixel-antialiased;
+  }
+}
+
 body {
   margin: 0;
   font-family: Arial, sans-serif;

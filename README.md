@@ -51,6 +51,7 @@ npm install
    PORT=5000
    JWT_SECRET=your-secret-key
    ```
+   - You can use `server/env.example` as a template (copy it to `server/.env`).
 
 ## Running the Application
 
@@ -60,6 +61,7 @@ npm install
    - On Windows: MongoDB usually runs as a service after installation
    - On Linux/Mac: `sudo service mongod start`
    - Or use a cloud MongoDB instance like Atlas and point `MONGO_URI` to it
+  - Note: the server uses `MONGODB_URI` (see `server/env.example`).
 
 ### 2. Start the Backend API (server)
 

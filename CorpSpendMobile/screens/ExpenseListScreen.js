@@ -1,58 +1,58 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
+import React, { useEffect, useState, useContext } from 'react';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Image, StatusBar } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-
-const API_URL = 'http://10.30.63.75:5000/api'; // KEEP YOUR LAPTOP IP HERE
+import { ThemeContext } from '../constants/ThemeContext'; 
+import { API_URL } from '../constants/Config';
 
 export default function ExpenseListScreen({ navigation }) {
+    const { theme, toggleTheme, colors } = useContext(ThemeContext);
     const [expenses, setExpenses] = useState([]);
     const [role, setRole] = useState('employee');
     const [username, setUsername] = useState('User');
+    const [profilePic, setProfilePic] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false); // 👈 Dedicated refresh state
     const [totalSpent, setTotalSpent] = useState(0);
-    const [categoryData, setCategoryData] = useState({});
 
-    const fetchExpenses = async () => {
+    const fetchExpenses = async (isRefresh = false) => {
+        if (!isRefresh) setLoading(true);
         try {
             const token = await AsyncStorage.getItem('userToken');
             const storedRole = await AsyncStorage.getItem('userRole');
             const storedName = await AsyncStorage.getItem('userName'); 
+            const storedPic = await AsyncStorage.getItem('userProfilePic'); 
             
             setRole(storedRole || 'employee');
             if (storedName) setUsername(storedName);
+            if (storedPic) setProfilePic(storedPic);
 
             const res = await axios.get(`${API_URL}/expenses`, {
                 headers: { 'x-auth-token': token }
             });
+            
+            // Filter out rejected expenses for total calculation just like Web
+            const validExpenses = res.data.filter(e => e.status !== 'Rejected');
+            const total = validExpenses.reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
+            
             setExpenses(res.data);
-
-            // 100% Dynamic Math for Charts & Budgets
-            let total = 0;
-            let catTotals = {};
-
-            res.data.forEach(item => {
-                const amt = Number(item.amount || 0);
-                total += amt;
-                
-                // Group by category for the chart
-                const cat = item.category || 'Other';
-                catTotals[cat] = (catTotals[cat] || 0) + amt;
-            });
-
             setTotalSpent(total);
-            setCategoryData(catTotals);
-
         } catch (error) {
-            console.log(error);
+            console.log("Fetch Error:", error);
+            if (error.response?.status === 401) navigation.replace('Login');
         } finally {
             setLoading(false);
+            setRefreshing(false);
         }
     };
 
-    // Refresh data every time this screen is focused
+    const onRefresh = () => {
+        setRefreshing(true);
+        fetchExpenses(true); 
+    };
+
     useEffect(() => {
         const unsubscribe = navigation.addListener('focus', () => {
             fetchExpenses();
@@ -61,28 +61,20 @@ export default function ExpenseListScreen({ navigation }) {
     }, [navigation]);
 
     const handleLogout = async () => {
-        Alert.alert(
-            "Logout",
-            "Are you sure you want to sign out?",
-            [
-                { text: "Cancel", style: "cancel" },
-                { 
-                    text: "Logout", 
-                    style: "destructive", 
-                    onPress: async () => {
-                        await AsyncStorage.clear();
-                        navigation.replace('Login');
-                    }
-                }
-            ]
-        );
+        Alert.alert("Logout", "Are you sure you want to sign out?", [
+            { text: "Cancel", style: "cancel" },
+            { text: "Logout", style: "destructive", onPress: async () => {
+                await AsyncStorage.clear();
+                navigation.replace('Login');
+            }}
+        ]);
     };
 
-    const processUpdate = async (id, status, reason) => {
+    const processUpdate = async (id, status) => {
         try {
             const token = await AsyncStorage.getItem('userToken');
-            await axios.put(`${API_URL}/expenses/approve/${id}`, { status, reason }, { headers: { 'x-auth-token': token } });
-            fetchExpenses(); 
+            await axios.put(`${API_URL}/expenses/approve/${id}`, { status }, { headers: { 'x-auth-token': token } });
+            fetchExpenses(true); 
         } catch (error) {
             Alert.alert("Error", "Failed to update expense.");
         }
@@ -90,144 +82,149 @@ export default function ExpenseListScreen({ navigation }) {
 
     const isManager = role === 'manager' || role === 'admin';
     const budgetLimit = isManager ? 500000 : 50000;
-    const remaining = budgetLimit - totalSpent;
-    const progressPercent = Math.min((totalSpent / budgetLimit) * 100, 100).toFixed(1);
+    const progressPercent = Math.min((totalSpent / budgetLimit) * 100, 100);
 
     const getCategoryIcon = (category) => {
         switch(category?.toLowerCase()) {
             case 'food': return { name: 'silverware-fork-knife', color: '#ef4444' };
-            case 'transport': return { name: 'car', color: '#3b82f6' };
+            case 'travel': return { name: 'airplane', color: '#3b82f6' };
+            case 'software': return { name: 'laptop', color: '#6366F1' };
+            case 'equipment': return { name: 'tools', color: '#f59e0b' };
             default: return { name: 'receipt', color: '#10b981' };
         }
     };
+
     const renderDashboardHeader = () => (
+
+        
         <View style={styles.headerContainer}>
             <View style={styles.headerRow}>
-                <View>
-                    {/* UPDATED GREETING LOGIC */}
-                    <Text style={styles.greeting}>
-                        {isManager ? `Welcome, ${username} ` : `Hello, ${username}! `}
-                    </Text>
-                    <Text style={styles.subGreeting}>
-                        {isManager ? 'Company Dashboard & Approvals' : 'Track your expenses wisely'}
-                    </Text>
+            <TouchableOpacity style={[styles.iconBtn, { backgroundColor: colors.card }]} onPress={toggleTheme}>
+        <Ionicons name={theme === 'light' ? "moon-outline" : "sunny-outline"} size={22} color={colors.text} />
+    </TouchableOpacity>
+
+    {/* 🛡️ NEW: ADMIN IAM SHIELD (Only visible to Admins) */}
+    {role === 'admin' && (
+        <TouchableOpacity 
+            style={[styles.iconBtn, { backgroundColor: colors.primary + '20' }]} 
+            onPress={() => navigation.navigate('AdminDashboard')}
+        >
+            <Ionicons name="shield-checkmark" size={22} color={colors.primary} />
+        </TouchableOpacity>
+    )}
+    
+    {/* Add Expense (Only visible to Employees) */}
+    {!isManager && (
+        <TouchableOpacity style={styles.addButton} onPress={() => navigation.navigate('AddExpense')}>
+            <Ionicons name="add" size={26} color="#fff" />
+        </TouchableOpacity>
+    )}
+    
+    {/* Logout */}
+    <TouchableOpacity style={[styles.iconBtn, { backgroundColor: colors.card }]} onPress={handleLogout}>
+        <Ionicons name="log-out-outline" size={22} color="#ef4444" />
+    </TouchableOpacity>
+                <View style={styles.userProfileSection}>
+                    <TouchableOpacity onPress={() => navigation.navigate('Profile')}>
+                        <View style={styles.avatarWrapper}>
+                            {profilePic ? (
+                                <Image source={{ uri: profilePic }} style={styles.avatarImg} />
+                            ) : (
+                                <View style={[styles.avatarPlaceholder, { backgroundColor: colors.border }]}>
+                                    <Ionicons name="person" size={22} color={colors.subtext} />
+                                </View>
+                            )}
+                            <View style={styles.onlineDot} />
+                        </View>
+                    </TouchableOpacity>
+                    
+                    <View style={styles.welcomeTextColumn}>
+                        <Text style={[styles.greeting, { color: colors.text }]}>
+                            {username} 
+                        </Text>
+                        <View style={[styles.roleBadge, { backgroundColor: role === 'admin' ? '#F3E8FF' : '#DBEAFE' }]}>
+                             <Text style={[styles.roleText, { color: role === 'admin' ? '#7E22CE' : '#1D4ED8' }]}>
+                                {role.toUpperCase()}
+                             </Text>
+                        </View>
+                    </View>
                 </View>
-                <View style={{flexDirection: 'row', gap: 8}}>
-                    <TouchableOpacity style={styles.exportButton} onPress={() => setExportModalVisible(true)}>
-                        <Ionicons name="download-outline" size={22} color="#6366F1" />
+
+                <View style={styles.headerActions}>
+                    <TouchableOpacity style={[styles.iconBtn, { backgroundColor: colors.card }]} onPress={toggleTheme}>
+                        <Ionicons name={theme === 'light' ? "moon-outline" : "sunny-outline"} size={22} color={colors.text} />
                     </TouchableOpacity>
                     
                     {!isManager && (
                         <TouchableOpacity style={styles.addButton} onPress={() => navigation.navigate('AddExpense')}>
-                            <Ionicons name="add" size={24} color="#fff" />
+                            <Ionicons name="add" size={26} color="#fff" />
                         </TouchableOpacity>
                     )}
-                    <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+                    
+                    <TouchableOpacity style={[styles.iconBtn, { backgroundColor: colors.card }]} onPress={handleLogout}>
                         <Ionicons name="log-out-outline" size={22} color="#ef4444" />
                     </TouchableOpacity>
                 </View>
             </View>
-            
 
-            {/* Purple Budget Card */}
             <View style={styles.budgetCard}>
-                <View style={styles.budgetHeader}>
+                <View style={styles.budgetTop}>
                     <View>
-                        <Text style={styles.budgetLabel}>{isManager ? 'Total Company Spend' : 'Total Spent This Month'}</Text>
-                        <Text style={styles.budgetAmount}>₹{totalSpent.toLocaleString()}</Text>
+                        <Text style={styles.budgetLabel}>{isManager ? 'Company Spend' : 'Monthly Spending'}</Text>
+                        <Text style={styles.budgetAmount}>₹{totalSpent.toLocaleString('en-IN')}</Text>
                     </View>
-                    <View style={styles.iconCircle}>
-                        <MaterialCommunityIcons name="currency-inr" size={28} color="#fff" />
-                    </View>
+                    <MaterialCommunityIcons name="wallet-outline" size={32} color="rgba(255,255,255,0.4)" />
                 </View>
-
-                <View style={styles.budgetDetails}>
-                    <Text style={styles.budgetText}>Budget: ₹{budgetLimit.toLocaleString()}</Text>
-                    <Text style={styles.budgetText}>Remaining: ₹{remaining > 0 ? remaining.toLocaleString() : '0'}</Text>
-                </View>
-
                 <View style={styles.progressBarBg}>
-                    <View style={[styles.progressBarFill, { width: `${progressPercent}%`, backgroundColor: progressPercent > 90 ? '#ef4444' : '#FFFFFF' }]} />
+                    <View style={[styles.progressBarFill, { width: `${progressPercent}%`, backgroundColor: '#FFF' }]} />
                 </View>
+                <Text style={styles.budgetSubtext}>Limit: ₹{budgetLimit.toLocaleString('en-IN')}</Text>
             </View>
 
-            {/* DYNAMIC CATEGORY BAR CHART */}
-            {Object.keys(categoryData).length > 0 && (
-                <View style={styles.chartCard}>
-                    <Text style={styles.sectionTitle}>Spending by Category</Text>
-                    {Object.keys(categoryData).map((cat, index) => {
-                        const amt = categoryData[cat];
-                        const catPercent = ((amt / totalSpent) * 100).toFixed(0);
-                        const iconData = getCategoryIcon(cat);
-                        
-                        return (
-                            <View key={index} style={styles.chartRow}>
-                                <View style={styles.chartLabelContainer}>
-                                    <Text style={styles.chartCatName}>{cat}</Text>
-                                    <Text style={styles.chartCatAmount}>₹{amt.toLocaleString()}</Text>
-                                </View>
-                                <View style={styles.chartBarBackground}>
-                                    <View style={[styles.chartBarFill, { width: `${catPercent}%`, backgroundColor: iconData.color }]} />
-                                </View>
-                            </View>
-                        );
-                    })}
-                </View>
-            )}
-
-            <Text style={styles.sectionTitle}>Recent Transactions</Text>
-            
-            {/* Empty State Message */}
-            {expenses.length === 0 && (
-                <View style={styles.emptyState}>
-                    <Ionicons name="receipt-outline" size={48} color="#cbd5e1" />
-                    <Text style={styles.emptyStateText}>No expenses logged yet.</Text>
-                </View>
-            )}
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>Recent Transactions</Text>
         </View>
     );
 
     const renderExpenseCard = ({ item }) => {
         const iconData = getCategoryIcon(item.category);
         return (
-            <View style={styles.transactionCard}>
-                <View style={styles.transactionRow}>
-                    <View style={[styles.transactionIconBg, { backgroundColor: iconData.color + '20' }]}>
+            <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                <View style={styles.cardMain}>
+                    <View style={[styles.iconBg, { backgroundColor: iconData.color + '15' }]}>
                         <MaterialCommunityIcons name={iconData.name} size={24} color={iconData.color} />
                     </View>
-                    <View style={styles.transactionDetails}>
-                        <Text style={styles.transactionTitle}>{item.title}</Text>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
-                            <Text style={styles.transactionCategory}>{item.category}</Text>
-                            <Text style={styles.bullet}> • </Text>
-                            <Text style={[styles.transactionStatus, { color: item.status === 'Approved' ? '#10b981' : item.status === 'Rejected' ? '#ef4444' : '#f59e0b' }]}>
+                    <View style={styles.cardContent}>
+                        <Text style={[styles.merchantName, { color: colors.text }]}>{item.title}</Text>
+                        <View style={styles.cardMeta}>
+                            <Text style={[styles.cardSub, { color: colors.subtext }]}>{item.category}</Text>
+                            <Text style={styles.dot}> • </Text>
+                            <Text style={[styles.statusText, { color: item.status === 'Approved' ? '#10b981' : item.status === 'Rejected' ? '#ef4444' : '#f59e0b' }]}>
                                 {item.status}
                             </Text>
                         </View>
                     </View>
-                    <Text style={styles.transactionAmount}>₹{Number(item.amount || 0).toLocaleString()}</Text>
+                    <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={[styles.amountText, { color: colors.text }]}>₹{(item.amount || 0).toLocaleString('en-IN')}</Text>
+                        {item.currency !== 'INR' && (
+                            <Text style={{ fontSize: 10, color: colors.subtext }}>{item.originalAmount} {item.currency}</Text>
+                        )}
+                    </View>
                 </View>
 
                 {item.isFlagged && isManager && (
-                    <View style={styles.aiFlagContainer}>
-                        <Ionicons name="warning" size={16} color="#b91c1c" />
-                        <Text style={styles.aiFlagText}>AI FLAG: SPENDING ANOMALY</Text>
+                    <View style={styles.flagBox}>
+                        <Ionicons name="warning" size={14} color="#b91c1c" />
+                        <Text style={styles.flagText}>ANOMALY DETECTED</Text>
                     </View>
                 )}
 
                 {isManager && item.status === 'Pending' && (
-                    <View style={styles.actionRow}>
-                        <TouchableOpacity style={[styles.actionBtn, styles.approveBtn]} onPress={() => processUpdate(item._id, 'Approved', 'Looks good.')}>
-                            <Ionicons name="checkmark" size={16} color="#10b981" />
-                            <Text style={[styles.actionBtnText, {color: '#10b981'}]}>Approve</Text>
+                    <View style={styles.managerActions}>
+                        <TouchableOpacity style={[styles.actionButton, styles.approveBtn]} onPress={() => processUpdate(item._id, 'Approved')}>
+                            <Text style={styles.approveText}>Approve</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity style={[styles.actionBtn, styles.rejectBtn]} onPress={() => {
-                            Alert.prompt("Reject Expense", "Provide a reason:", 
-                                [{ text: "Cancel", style: "cancel" }, { text: "Reject", style: "destructive", onPress: (reason) => processUpdate(item._id, 'Rejected', reason) }]
-                            );
-                        }}>
-                            <Ionicons name="close" size={16} color="#ef4444" />
-                            <Text style={[styles.actionBtnText, {color: '#ef4444'}]}>Reject</Text>
+                        <TouchableOpacity style={[styles.actionButton, styles.rejectBtn]} onPress={() => processUpdate(item._id, 'Rejected')}>
+                            <Text style={styles.rejectText}>Reject</Text>
                         </TouchableOpacity>
                     </View>
                 )}
@@ -235,70 +232,75 @@ export default function ExpenseListScreen({ navigation }) {
         );
     };
 
-    if (loading) return <ActivityIndicator size="large" color="#6366F1" style={{ flex: 1, justifyContent: 'center' }} />;
+    if (loading && !refreshing) return (
+        <View style={[styles.loader, {backgroundColor: colors.bg}]}>
+            <ActivityIndicator size="large" color="#6366F1" />
+        </View>
+    );
 
     return (
-        <SafeAreaView style={styles.container}>
+        <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]} edges={['top']}>
+            <StatusBar barStyle={theme === 'light' ? 'dark-content' : 'light-content'} />
             <FlatList 
                 data={expenses}
-                keyExtractor={(item, index) => item._id || index.toString()}
+                keyExtractor={(item) => item._id}
                 ListHeaderComponent={renderDashboardHeader}
                 renderItem={renderExpenseCard}
-                onRefresh={fetchExpenses}
-                refreshing={loading}
-                contentContainerStyle={styles.scrollContent}
+                onRefresh={onRefresh}
+                refreshing={refreshing}
+                contentContainerStyle={styles.scrollContainer}
                 showsVerticalScrollIndicator={false}
+                ListEmptyComponent={() => (
+                    <Text style={{ textAlign: 'center', marginTop: 20, color: colors.subtext }}>No transactions yet.</Text>
+                )}
             />
         </SafeAreaView>
     );
 }
 
+// ... styles remain the same as your provided code ...
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#F8FAFC' },
-    scrollContent: { padding: 20, paddingBottom: 40 },
+    container: { flex: 1 },
+    loader: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+    scrollContainer: { padding: 20 },
     headerContainer: { marginBottom: 10 },
-    headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24, marginTop: 10 },
-    greeting: { fontSize: 24, fontWeight: 'bold', color: '#1E293B' },
-    subGreeting: { fontSize: 14, color: '#64748B', marginTop: 4 },
-    addButton: { backgroundColor: '#6366F1', width: 44, height: 44, borderRadius: 14, justifyContent: 'center', alignItems: 'center', elevation: 2 },
-    logoutButton: { backgroundColor: '#fef2f2', width: 44, height: 44, borderRadius: 14, justifyContent: 'center', alignItems: 'center', elevation: 2 },
-    budgetCard: { backgroundColor: '#6366F1', borderRadius: 24, padding: 24, marginBottom: 24, elevation: 6 },
-    budgetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-    budgetLabel: { color: '#E0E7FF', fontSize: 14, fontWeight: '500' },
-    budgetAmount: { color: '#FFFFFF', fontSize: 36, fontWeight: 'bold', marginTop: 4 },
-    iconCircle: { backgroundColor: 'rgba(255,255,255,0.2)', width: 48, height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center' },
-    budgetDetails: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 20, marginBottom: 12 },
-    budgetText: { color: '#E0E7FF', fontSize: 13, fontWeight: '500' },
-    progressBarBg: { height: 8, backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 4, overflow: 'hidden' },
+    headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 25 },
+    userProfileSection: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+    avatarWrapper: { position: 'relative' },
+    avatarImg: { width: 50, height: 50, borderRadius: 25, borderWidth: 2, borderColor: '#6366F130' },
+    avatarPlaceholder: { width: 50, height: 50, borderRadius: 25 },
+    onlineDot: { position: 'absolute', bottom: 2, right: 2, width: 12, height: 12, backgroundColor: '#22C55E', borderRadius: 6, borderWidth: 2, borderColor: '#fff' },
+    welcomeTextColumn: { justifyContent: 'center' },
+    greeting: { fontSize: 20, fontWeight: 'bold', letterSpacing: -0.5 },
+    roleBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, marginTop: 2 },
+    roleText: { fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+    headerActions: { flexDirection: 'row', gap: 10 },
+    iconBtn: { width: 42, height: 42, borderRadius: 12, justifyContent: 'center', alignItems: 'center', elevation: 2, shadowOpacity: 0.1, shadowRadius: 4 },
+    addButton: { backgroundColor: '#6366F1', width: 42, height: 42, borderRadius: 12, justifyContent: 'center', alignItems: 'center', elevation: 4 },
+    budgetCard: { backgroundColor: '#6366F1', borderRadius: 24, padding: 24, marginBottom: 25, elevation: 8, shadowColor: '#6366F1', shadowOpacity: 0.4, shadowRadius: 10 },
+    budgetTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 },
+    budgetLabel: { color: '#E0E7FF', fontSize: 13, fontWeight: '600' },
+    budgetAmount: { color: '#FFF', fontSize: 32, fontWeight: 'bold' },
+    progressBarBg: { height: 8, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 4, overflow: 'hidden' },
     progressBarFill: { height: '100%', borderRadius: 4 },
-    
-    // Chart Styles
-    chartCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 20, marginBottom: 24, elevation: 2 },
-    chartRow: { marginBottom: 12 },
-    chartLabelContainer: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-    chartCatName: { fontSize: 14, fontWeight: '600', color: '#475569' },
-    chartCatAmount: { fontSize: 14, fontWeight: '700', color: '#1E293B' },
-    chartBarBackground: { height: 8, backgroundColor: '#F1F5F9', borderRadius: 4, overflow: 'hidden' },
-    chartBarFill: { height: '100%', borderRadius: 4 },
-
-    sectionTitle: { fontSize: 18, fontWeight: '700', color: '#1E293B', marginBottom: 15 },
-    emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
-    emptyStateText: { marginTop: 10, color: '#94a3b8', fontSize: 16 },
-
-    transactionCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, marginBottom: 16, elevation: 2 },
-    transactionRow: { flexDirection: 'row', alignItems: 'center' },
-    transactionIconBg: { width: 48, height: 48, borderRadius: 16, justifyContent: 'center', alignItems: 'center', marginRight: 16 },
-    transactionDetails: { flex: 1 },
-    transactionTitle: { fontSize: 16, fontWeight: '700', color: '#1E293B' },
-    transactionCategory: { fontSize: 13, color: '#64748B' },
-    bullet: { fontSize: 13, color: '#CBD5E1' },
-    transactionStatus: { fontSize: 13, fontWeight: '700' },
-    transactionAmount: { fontSize: 18, fontWeight: '800', color: '#1E293B' },
-    aiFlagContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fef2f2', padding: 10, borderRadius: 10, marginTop: 12 },
-    aiFlagText: { color: '#b91c1c', fontSize: 12, fontWeight: '800', marginLeft: 6 },
-    actionRow: { flexDirection: 'row', gap: 10, marginTop: 15, borderTopWidth: 1, borderTopColor: '#f1f5f9', paddingTop: 15 },
-    actionBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 10, borderRadius: 12, gap: 5, borderWidth: 1 },
-    approveBtn: { borderColor: '#10b981', backgroundColor: '#ecfdf5' },
-    rejectBtn: { borderColor: '#ef4444', backgroundColor: '#fef2f2' },
-    actionBtnText: { fontWeight: 'bold' }
+    budgetSubtext: { color: '#E0E7FF', fontSize: 11, marginTop: 10, fontWeight: '700' },
+    sectionTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15 },
+    card: { borderRadius: 20, padding: 16, marginBottom: 15, borderWidth: 1 },
+    cardMain: { flexDirection: 'row', alignItems: 'center' },
+    iconBg: { width: 50, height: 50, borderRadius: 15, justifyContent: 'center', alignItems: 'center' },
+    cardContent: { flex: 1, marginLeft: 15 },
+    merchantName: { fontSize: 16, fontWeight: '700' },
+    cardMeta: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
+    cardSub: { fontSize: 13 },
+    dot: { color: '#CBD5E1' },
+    statusText: { fontSize: 13, fontWeight: '800' },
+    amountText: { fontSize: 18, fontWeight: '900' },
+    flagBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEF2F2', padding: 8, borderRadius: 10, marginTop: 12, gap: 6 },
+    flagText: { color: '#B91C1C', fontSize: 11, fontWeight: '900' },
+    managerActions: { flexDirection: 'row', gap: 10, marginTop: 15, paddingTop: 15, borderTopWidth: 1, borderTopColor: 'rgba(0,0,0,0.05)' },
+    actionButton: { flex: 1, paddingVertical: 10, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+    approveBtn: { backgroundColor: '#ECFDF5' },
+    rejectBtn: { backgroundColor: '#FEF2F2' },
+    approveText: { color: '#10B981', fontSize: 13, fontWeight: 'bold' },
+    rejectText: { color: '#EF4444', fontSize: 13, fontWeight: 'bold' }
 });

@@ -1,56 +1,63 @@
-require('dotenv').config();
 const express = require('express');
-const path = require('path');
-const connectDB = require('./config/db');
 const cors = require('cors');
-const fs = require('fs'); // Moved to the top for cleaner architecture
+const dotenv = require('dotenv');
+const connectDB = require('./config/db');
+
+// --- NEW IMPORTS FOR SEEDING ---
+const User = require('./models/User');
+const bcrypt = require('bcryptjs');
 
 const app = express();
 
-// Connect Database
-connectDB();
+dotenv.config();
 
-// Middleware
 app.use(cors()); 
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
-// UPGRADE 1: Increased payload limit for receipt images
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Health check endpoint for cloud deployment (Render/Railway)
-app.get('/api/health', (req, res) => {
-    res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// API Routes
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/expenses', require('./routes/expenseRoutes'));
+app.use('/api/users', require('./routes/users'));
+app.use('/api/auditlogs', require('./routes/auditLogs'));
+app.use('/api/admin', require('./routes/adminRoutes'));
+app.use('/api/users', require('./routes/userRoutes'));
 
-// Serve React static files when a built client exists (Web Dashboard)
-const clientBuildPath = path.join(__dirname, '..', 'client', 'build');
-
-if (fs.existsSync(path.join(clientBuildPath, 'index.html'))) {
-    app.use(express.static(clientBuildPath));
-
-    // Handle React routing (send all non-API requests to index.html)
-    app.get('*', (req, res) => {
-        res.sendFile(path.join(clientBuildPath, 'index.html'));
-    });
-
-    console.log('Serving React build from:', clientBuildPath);
-} else {
-    console.log('client/build not found - API-only mode (development).');
-}
-
-// UPGRADE 2: Global Error Handler
-app.use((err, req, res, next) => {
-    console.error("Global Server Error:", err.stack);
-    res.status(500).json({ msg: 'An unexpected server error occurred.' });
-});
-
-// UPGRADE 3: Mobile Network Binding
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server started on port ${PORT}`);
-    console.log(`Listening on all network interfaces (Ready for Mobile App)`);
+
+// --- THE ONLY HARDCODED ACCOUNT (ROOT ADMIN) ---
+const createInitialAdmin = async () => {
+  try {
+      // Check if your specific admin account already exists
+      const adminExists = await User.findOne({ email: 'your.real.email@gmail.com' }); // PUT YOUR GMAIL HERE
+      
+      if (!adminExists) {
+          console.log("Generating the permanent Root Admin...");
+          const salt = await bcrypt.genSalt(10);
+          
+          // PUT YOUR PERMANENT PASSWORD HERE
+          const hashedPassword = await bcrypt.hash('CropSpend123', salt); 
+
+          const superAdmin = new User({
+              username: 'System Administrator',
+              email: 'cropspend@gmail.com', // PUT YOUR GMAIL HERE
+              password: hashedPassword,
+              department: 'Administration',
+              role: 'admin',
+              status: 'Active' // Instantly active so you can log in
+          });
+
+          await superAdmin.save();
+          console.log("✅ Root Admin created successfully.");
+      }
+  } catch (err) {
+      console.error("Failed to seed Root Admin:", err);
+  }
+};
+
+// --- CONNECT TO DB AND START SERVER ---
+connectDB(async () => {
+// Run this once to ensure you have the keys to the castle
+await createInitialAdmin(); 
+
+app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
 });
