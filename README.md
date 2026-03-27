@@ -1,4 +1,4 @@
-# Expense Tracker Application
+# CropSpend 
 
 A full-stack expense tracking application built with React, Node.js, Express, and MongoDB. Features include user authentication, expense management, and data visualization.
 
